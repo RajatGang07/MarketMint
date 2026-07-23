@@ -11,3 +11,7 @@ frontend/dist/
 
 # macOS
 .DS_Store
+
+# Embedded UI: build.sh copies frontend/dist here; only the placeholder is tracked.
+backend/internal/web/dist/*
+!backend/internal/web/dist/index.html

@@ -262,6 +262,65 @@ cd backend  && go test ./...
 cd frontend && npm run build   # typecheck + bundle
 ```
 
+## Deploying free
+
+The app compiles to **one 17 MB binary** — Go API with the React dashboard
+embedded — so a single free web service hosts everything, same-origin, no
+CORS. The [Dockerfile](Dockerfile) builds exactly that.
+
+One thing serverless platforms cannot do: the order matcher is a background
+loop (limit fills, trailing stops, the 15:15 square-off every 5s), so the
+backend needs a real process — **Vercel functions won't work for it**. The
+free combination that does:
+
+| Piece | Where | Why |
+| ----- | ----- | --- |
+| API + dashboard | **Render** free web service (Docker) | always-on process, [render.yaml](render.yaml) included |
+| Postgres | **Neon** free tier | Render's free DB self-deletes after 30 days; Neon's doesn't (0.5 GB, autosuspends, pgx reconnects fine) |
+| Keep-awake | **GitHub Actions** cron ([keepalive.yml](.github/workflows/keepalive.yml)) | Render free sleeps after 15 idle min; this pings /health every 10 min **during IST market hours only** — awake when the matcher matters, asleep nights/weekends, well inside the free 750 h/month |
+
+### Steps
+
+1. **Neon** — create a project at neon.tech, database `paper_trading`. Copy
+   the connection string (`postgres://…neon.tech/paper_trading?sslmode=require`).
+   The schema migrates itself on first boot.
+2. **Push this repo to GitHub** (the `.gitignore` already excludes `.env`;
+   never commit credentials).
+3. **Render** — New → Blueprint → pick the repo (it reads `render.yaml`).
+   Fill the secrets when prompted: `DATABASE_URL` (from Neon),
+   `GROWW_API_KEY`, `GROWW_API_SECRET`. Deploy; first build takes a few
+   minutes. Your app is live at `https://<name>.onrender.com`.
+4. **Keep-awake** — in the GitHub repo: Settings → Secrets and variables →
+   Actions → *Variables* → add `APP_URL = https://<name>.onrender.com`.
+   The workflow starts pinging on the next weekday session.
+5. **(Optional) Vercel for the frontend** — only if you want the UI on
+   Vercel's CDN: import the repo, set *Root Directory* = `frontend`
+   ([vercel.json](frontend/vercel.json) is already there), add env
+   `VITE_API_BASE=https://<name>.onrender.com`, and append your
+   `https://<app>.vercel.app` to `CORS_ORIGINS` on Render. Skip this
+   entirely if one URL is enough — the Render service already serves the
+   dashboard.
+
+Local production build, if you want to test what gets deployed:
+`backend/scripts/build.sh && PORT=8010 backend/bin/server`.
+
+### Free-tier honesty
+
+- **Cold starts:** outside the ping window the first request waits ~30–60 s
+  while Render wakes the instance and it re-downloads the 21 MB instrument
+  master. Fine for paper trading.
+- **While asleep, nothing matches** — resting limit orders and trailing
+  stops only progress when the process is awake. The keepalive covers market
+  hours, which is the only time prices move anyway.
+- **Yahoo from datacenter IPs** is rate-limited more aggressively than from
+  home; the provider chain degrades to the simulator rather than erroring,
+  and /health tells you when. A Groww Live Data subscription sidesteps this
+  entirely (`groww` then wins the chain).
+- **Neon autosuspend** adds ~0.5 s to the first query after idle; pgxpool
+  reconnects transparently.
+- This deployment has **no auth** — anyone with the URL can trade your paper
+  account. Fine for a demo; put it behind auth before sharing widely.
+
 ## Security note
 
 `backend/.env` holds live Groww credentials and is gitignored. Rotate the API
