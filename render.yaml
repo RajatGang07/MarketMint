@@ -1,0 +1,27 @@
+# Render blueprint: deploy MarketMint as one free web service.
+# Database is NOT created here — use Neon's free Postgres (Render's free
+# database expires after 30 days) and paste its URL into DATABASE_URL.
+services:
+  - type: web
+    name: marketmint
+    runtime: docker
+    plan: free
+    region: singapore          # closest to NSE data sources
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL      # postgres://...neon.tech/paper_trading?sslmode=require
+        sync: false
+      - key: GROWW_API_KEY
+        sync: false
+      - key: GROWW_API_SECRET
+        sync: false
+      - key: MARKET_DATA_PROVIDERS
+        value: groww,yahoo,mock
+      - key: STARTING_CASH
+        value: "1000000"
+      - key: MATCH_INTERVAL
+        value: 5s
+      # Same-origin UI needs no CORS entry; add your Vercel URL here only if
+      # you also deploy the frontend separately.
+      - key: CORS_ORIGINS
+        value: http://localhost:5173

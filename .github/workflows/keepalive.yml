@@ -1,0 +1,24 @@
+# Render's free tier sleeps after 15 idle minutes — which would pause the
+# order matcher (trailing stops, limit fills, the 15:15 square-off).
+# This pings the service every 10 minutes during NSE market hours (plus a
+# buffer for the square-off window), so it is awake exactly when it matters
+# and sleeps nights/weekends within the free 750 instance-hours.
+#
+# Setup: repo Settings → Secrets and variables → Actions → New variable
+#   APP_URL = https://<your-service>.onrender.com
+name: keepalive
+on:
+  schedule:
+    # 03:40–10:10 UTC = 09:10–15:40 IST, Monday–Friday.
+    - cron: "*/10 3-10 * * 1-5"
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          if [ -z "${{ vars.APP_URL }}" ]; then
+            echo "Set the APP_URL repository variable to your Render URL"; exit 1
+          fi
+          curl -fsS --max-time 60 --retry 3 --retry-all-errors "${{ vars.APP_URL }}/health"

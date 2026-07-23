@@ -1,0 +1,13 @@
+# Secrets
+.env
+**/.env
+
+# Go
+backend/bin/
+
+# Node
+node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
