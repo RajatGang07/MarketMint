@@ -1,0 +1,17 @@
+# Renders auto-deploy needs its GitHub App; this repo deploys by public URL
+# instead, so CI triggers the build explicitly on every push to main.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+jobs:
+  trigger-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H 'Content-Type: application/json' \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" -d '{}'
