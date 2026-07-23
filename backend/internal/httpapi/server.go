@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,11 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/instruments"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/intraday"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/marketdata"
@@ -35,8 +40,19 @@ type Server struct {
 	analytics *analytics.Engine
 	intraday  *intraday.Scanner
 	signals   *signals.Composer
-	accountID int64
+	auth      *auth.Service
 	log       *slog.Logger
+}
+
+// ctxKey scopes context values to this package.
+type ctxKey int
+
+const accountKey ctxKey = iota
+
+// accountFrom returns the authenticated account injected by requireAuth.
+func accountFrom(r *http.Request) store.Account {
+	acct, _ := r.Context().Value(accountKey).(store.Account)
+	return acct
 }
 
 func NewServer(
@@ -47,7 +63,7 @@ func NewServer(
 	analyticsEngine *analytics.Engine,
 	intradayScanner *intraday.Scanner,
 	signalsBoard *signals.Composer,
-	accountID int64,
+	authService *auth.Service,
 	log *slog.Logger,
 ) *Server {
 	return &Server{
@@ -58,9 +74,28 @@ func NewServer(
 		analytics: analyticsEngine,
 		intraday:  intradayScanner,
 		signals:   signalsBoard,
-		accountID: accountID,
+		auth:      authService,
 		log:       log,
 	}
+}
+
+// requireAuth resolves the bearer token to an account or answers 401.
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		acct, err := s.auth.Authenticate(r.Context(), token)
+		if err != nil {
+			var cred auth.CredentialError
+			if errors.As(err, &cred) {
+				writeErr(w, http.StatusUnauthorized, cred.Reason)
+				return
+			}
+			s.log.Error("auth lookup failed", "err", err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accountKey, acct)))
+	})
 }
 
 // Routes builds the router, including CORS for the Vite dev server.
@@ -80,6 +115,14 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 
 	r.With(quick).Get("/health", s.handleHealth)
 
+	r.Route("/auth", func(r chi.Router) {
+		r.Use(quick)
+		r.Post("/signup", s.handleSignup)
+		r.Post("/login", s.handleLogin)
+		r.Post("/logout", s.handleLogout)
+		r.With(s.requireAuth).Get("/me", s.handleMe)
+	})
+
 	r.Route("/market", func(r chi.Router) {
 		r.Use(quick)
 		r.Get("/ltp", s.handleLTP)
@@ -90,23 +133,25 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 
 	r.With(quick).Get("/instruments/search", s.handleSearchInstruments)
 
-	r.With(middleware.Timeout(3*time.Minute)).Get("/analytics/recommendations", s.handleRecommendations)
-	r.With(middleware.Timeout(3*time.Minute)).Get("/analytics/intraday", s.handleIntraday)
-	r.With(middleware.Timeout(3*time.Minute)).Get("/analytics/signals", s.handleSignals)
+	slow := middleware.Timeout(3 * time.Minute)
+	r.With(slow, s.requireAuth).Get("/analytics/recommendations", s.handleRecommendations)
+	r.With(slow, s.requireAuth).Get("/analytics/intraday", s.handleIntraday)
+	r.With(slow, s.requireAuth).Get("/analytics/signals", s.handleSignals)
 
 	r.Route("/orders", func(r chi.Router) {
-		r.Use(quick)
+		r.Use(quick, s.requireAuth)
 		r.Get("/", s.handleListOrders)
 		r.Post("/", s.handlePlaceOrder)
 		r.Post("/{orderRef}/cancel", s.handleCancelOrder)
 	})
 
-	r.With(quick).Get("/trades", s.handleListTrades)
+	r.With(quick, s.requireAuth).Get("/trades", s.handleListTrades)
 
 	r.Route("/portfolio", func(r chi.Router) {
-		r.Use(quick)
+		r.Use(quick, s.requireAuth)
 		r.Get("/", s.handlePortfolio)
 		r.Post("/reset", s.handleReset)
+		r.Post("/equity", s.handleSetEquity)
 	})
 
 	// Everything that isn't an API route serves the embedded dashboard:
@@ -350,6 +395,7 @@ func (s *Server) handleSearchInstruments(w http.ResponseWriter, r *http.Request)
 // The first uncached call fans out a couple hundred candle fetches and takes
 // 10-30s; after that it serves from a 15-minute cache.
 func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
+	account := accountFrom(r)
 	bands := analytics.DefaultRiskBands
 	readBand := func(key string, into *float64) bool {
 		v := r.URL.Query().Get(key)
@@ -380,11 +426,6 @@ func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	account, err := s.store.GetAccount(r.Context(), s.accountID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
 	cash, _ := account.Cash.Float64()
 
 	res, err := s.analytics.Recommend(r.Context(), bands, cash, topN)
@@ -414,11 +455,7 @@ func (s *Server) handleIntraday(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	account, err := s.store.GetAccount(r.Context(), s.accountID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
+	account := accountFrom(r)
 	cash, _ := account.Cash.Float64()
 
 	res, err := s.intraday.Scan(r.Context(), risk, cash, topN)
@@ -433,14 +470,10 @@ func (s *Server) handleIntraday(w http.ResponseWriter, r *http.Request) {
 // per stock, composed from the positional ranking, today's intraday state and
 // the account's holdings.
 func (s *Server) handleSignals(w http.ResponseWriter, r *http.Request) {
-	account, err := s.store.GetAccount(r.Context(), s.accountID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
+	account := accountFrom(r)
 	cash, _ := account.Cash.Float64()
 
-	board, err := s.signals.Compose(r.Context(), s.accountID, analytics.DefaultRiskBands, cash)
+	board, err := s.signals.Compose(r.Context(), account.ID, analytics.DefaultRiskBands, cash)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "signals failed: "+err.Error())
 		return
@@ -459,13 +492,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := s.store.GetAccount(r.Context(), s.accountID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-
-	order, err := s.engine.PlaceOrder(r.Context(), account, req)
+	order, err := s.engine.PlaceOrder(r.Context(), accountFrom(r), req)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -474,7 +501,7 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
-	orders, err := s.store.ListOrders(r.Context(), s.accountID, 200)
+	orders, err := s.store.ListOrders(r.Context(), accountFrom(r).ID, 200)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -483,7 +510,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
-	order, err := s.engine.CancelOrder(r.Context(), s.accountID, chi.URLParam(r, "orderRef"))
+	order, err := s.engine.CancelOrder(r.Context(), accountFrom(r).ID, chi.URLParam(r, "orderRef"))
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -492,7 +519,7 @@ func (s *Server) handleCancelOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListTrades(w http.ResponseWriter, r *http.Request) {
-	trades, err := s.store.ListTrades(r.Context(), s.accountID, 200)
+	trades, err := s.store.ListTrades(r.Context(), accountFrom(r).ID, 200)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -501,12 +528,7 @@ func (s *Server) handleListTrades(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
-	account, err := s.store.GetAccount(r.Context(), s.accountID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	view, err := s.engine.Portfolio(r.Context(), account)
+	view, err := s.engine.Portfolio(r.Context(), accountFrom(r))
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -515,11 +537,130 @@ func (s *Server) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
-	if err := s.engine.Reset(r.Context(), s.accountID); err != nil {
+	if err := s.engine.Reset(r.Context(), accountFrom(r).ID); err != nil {
 		s.fail(w, err)
 		return
 	}
-	s.handlePortfolio(w, r)
+	s.refreshedPortfolio(w, r)
+}
+
+// ---------------------------------------------------------------------------
+// Auth & account
+// ---------------------------------------------------------------------------
+
+type credentialsBody struct {
+	Username     string           `json:"username"`
+	Password     string           `json:"password"`
+	StartingCash *decimal.Decimal `json:"starting_cash"`
+}
+
+type sessionResponse struct {
+	Token    string          `json:"token"`
+	Username string          `json:"username"`
+	Equity   decimal.Decimal `json:"starting_cash"`
+}
+
+func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
+	var body credentialsBody
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	cash := decimal.Zero
+	if body.StartingCash != nil {
+		cash = *body.StartingCash
+	}
+	acct, token, err := s.auth.Signup(r.Context(), body.Username, body.Password, cash)
+	if err != nil {
+		s.failAuth(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionResponse{Token: token, Username: acct.Name, Equity: acct.StartingCash})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var body credentialsBody
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	acct, token, err := s.auth.Login(r.Context(), body.Username, body.Password)
+	if err != nil {
+		s.failAuth(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionResponse{Token: token, Username: acct.Name, Equity: acct.StartingCash})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token != "" {
+		_ = s.auth.Logout(r.Context(), token)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "signed out"})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	acct := accountFrom(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"username":      acct.Name,
+		"starting_cash": acct.StartingCash,
+		"cash":          acct.Cash,
+	})
+}
+
+// handleSetEquity re-bases the account at a user-chosen starting equity.
+// Destructive by design: positions and history describe the old bankroll.
+func (s *Server) handleSetEquity(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		StartingCash decimal.Decimal `json:"starting_cash"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.StartingCash.LessThan(auth.MinStartingCash) || body.StartingCash.GreaterThan(auth.MaxStartingCash) {
+		writeErr(w, http.StatusBadRequest, "starting equity must be between ₹"+auth.MinStartingCash.String()+" and ₹"+auth.MaxStartingCash.String())
+		return
+	}
+	acct := accountFrom(r)
+	err := s.store.InTx(r.Context(), func(tx pgx.Tx) error {
+		if _, err := store.LockAccount(r.Context(), tx, acct.ID); err != nil {
+			return err
+		}
+		return store.SetStartingCash(r.Context(), tx, acct.ID, body.StartingCash)
+	})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.refreshedPortfolio(w, r)
+}
+
+// refreshedPortfolio re-reads the account and answers with the fresh view.
+func (s *Server) refreshedPortfolio(w http.ResponseWriter, r *http.Request) {
+	acct, err := s.store.GetAccount(r.Context(), accountFrom(r).ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	view, err := s.engine.Portfolio(r.Context(), acct)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// failAuth maps credential errors to 400s without leaking internals.
+func (s *Server) failAuth(w http.ResponseWriter, err error) {
+	var cred auth.CredentialError
+	if errors.As(err, &cred) {
+		writeErr(w, http.StatusBadRequest, cred.Reason)
+		return
+	}
+	s.log.Error("auth failed", "err", err)
+	writeErr(w, http.StatusInternalServerError, "internal error")
 }
 
 // ---------------------------------------------------------------------------

@@ -570,8 +570,10 @@ func (e *Engine) CancelOrder(ctx context.Context, accountID int64, orderRef stri
 	return out, err
 }
 
-// RunMatcher fills resting orders on a ticker until ctx is cancelled.
-func (e *Engine) RunMatcher(ctx context.Context, accountID int64, every time.Duration) {
+// RunMatcher fills resting orders for every account on a ticker until ctx is
+// cancelled. Accounts are independent: one user's failure doesn't stall the
+// rest.
+func (e *Engine) RunMatcher(ctx context.Context, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
@@ -579,12 +581,21 @@ func (e *Engine) RunMatcher(ctx context.Context, accountID int64, every time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := e.MatchOpenOrders(ctx, accountID)
-			if err != nil && ctx.Err() == nil {
-				e.log.Warn("matcher pass failed", "err", err)
+			ids, err := e.store.AccountIDsWithOpenOrders(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					e.log.Warn("matcher: listing accounts failed", "err", err)
+				}
+				continue
 			}
-			if n > 0 {
-				e.log.Info("matcher filled resting orders", "count", n)
+			for _, id := range ids {
+				n, err := e.MatchOpenOrders(ctx, id)
+				if err != nil && ctx.Err() == nil {
+					e.log.Warn("matcher pass failed", "account", id, "err", err)
+				}
+				if n > 0 {
+					e.log.Info("matcher filled resting orders", "account", id, "count", n)
+				}
 			}
 		}
 	}

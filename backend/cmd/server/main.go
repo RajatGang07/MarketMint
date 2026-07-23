@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/config"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/groww"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/httpapi"
@@ -68,24 +69,19 @@ func run(log *slog.Logger) error {
 		log.Warn("instrument universe unavailable; symbol search disabled", "err", err)
 	}
 
-	account, err := st.EnsureAccount(ctx, cfg.DefaultAccountName, cfg.StartingCash)
-	if err != nil {
-		return err
-	}
-	log.Info("paper account ready", "name", account.Name, "cash", account.Cash.StringFixed(2))
-
 	engine := paper.New(st, market, log)
 	scanner := analytics.New(market, universe, log)
 	orb := intraday.NewScanner(market, universe, log)
 	board := signals.New(scanner, orb, st, market)
+	authSvc := auth.New(st)
 
-	// Resting LIMIT orders are matched in the background so they fill even
-	// while nobody has the dashboard open.
-	go engine.RunMatcher(ctx, account.ID, cfg.MatchInterval)
+	// Resting LIMIT orders are matched in the background for every account,
+	// so exits fire even while nobody has the dashboard open.
+	go engine.RunMatcher(ctx, cfg.MatchInterval)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, account.ID, log).Routes(cfg.CORSOrigins),
+		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, authSvc, log).Routes(cfg.CORSOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

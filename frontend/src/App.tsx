@@ -11,7 +11,8 @@ import { SignalsBoard } from './components/SignalsBoard'
 import { StatCard } from './components/StatCard'
 import { SymbolSearch } from './components/SymbolSearch'
 import { Watchlist } from './components/Watchlist'
-import { api, type ChartRange, type Quote } from './lib/api'
+import { AuthScreen } from './components/AuthScreen'
+import { api, AUTH_REQUIRED_EVENT, session, type ChartRange, type Quote } from './lib/api'
 import { inr, pct, signedInr } from './lib/format'
 import { ToastProvider, useToast } from './lib/toast'
 import { usePoll } from './lib/usePoll'
@@ -53,12 +54,46 @@ function marketIsOpen(): boolean {
 export default function App() {
   return (
     <ToastProvider>
-      <Dashboard />
+      <AuthGate />
     </ToastProvider>
   )
 }
 
-function Dashboard() {
+/** Shows the sign-in screen until a session exists; drops back to it on 401. */
+function AuthGate() {
+  const [user, setUser] = useState<string | null>(null)
+  const [checking, setChecking] = useState<boolean>(() => session.token() !== null)
+
+  useEffect(() => {
+    // Re-validate a stored token on load so a stale session doesn't render a
+    // dashboard full of 401 errors.
+    if (session.token()) {
+      api
+        .me()
+        .then((me) => setUser(me.username))
+        .catch(() => session.clear())
+        .finally(() => setChecking(false))
+    }
+    const onAuthRequired = () => setUser(null)
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired)
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired)
+  }, [])
+
+  if (checking) {
+    return (
+      <div className="grid min-h-screen place-items-center text-sm text-slate-500">
+        <div className="text-center">
+          <div className="mx-auto mb-3 h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-slate-200" />
+          Signing you in…
+        </div>
+      </div>
+    )
+  }
+  if (!user) return <AuthScreen onSignedIn={setUser} />
+  return <Dashboard username={user} onSignedOut={() => setUser(null)} />
+}
+
+function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: () => void }) {
   const toast = useToast()
   const [tab, setTab] = useState<Tab>(() => (localStorage.getItem(TAB_KEY) === 'ideas' ? 'ideas' : 'trade'))
   const [ideasTab, setIdeasTab] = useState<IdeasTab>('signals')
@@ -67,6 +102,7 @@ function Dashboard() {
   const [range, setRange] = useState<ChartRange>('1d')
   const [confirmReset, setConfirmReset] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [newEquity, setNewEquity] = useState('')
   const [marketOpen, setMarketOpen] = useState(marketIsOpen)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -168,15 +204,33 @@ function Dashboard() {
   async function doReset() {
     setResetting(true)
     try {
-      await api.reset()
-      toast.push('success', `Account reset — ${inr(p?.starting_cash ?? 1_000_000)} restored`)
+      const wanted = Number(newEquity)
+      if (newEquity && Number.isFinite(wanted) && wanted > 0) {
+        const fresh = await api.setEquity(wanted)
+        toast.push('success', `Account re-based — starting equity now ${inr(fresh.starting_cash)}`)
+      } else {
+        await api.reset()
+        toast.push('success', `Account reset — ${inr(p?.starting_cash ?? 1_000_000)} restored`)
+      }
       refreshAccount()
     } catch (err) {
       toast.push('error', (err as Error).message)
     } finally {
       setResetting(false)
       setConfirmReset(false)
+      setNewEquity('')
     }
+  }
+
+  async function signOut() {
+    try {
+      await api.logout()
+    } catch {
+      // Signing out locally is what matters.
+    }
+    session.clear()
+    onSignedOut()
+    toast.push('info', 'Signed out')
   }
 
   const live = health.data?.market_data_mode === 'live'
@@ -240,6 +294,16 @@ function Dashboard() {
             >
               Reset
             </button>
+            <div className="flex items-center gap-2 border-l border-slate-800 pl-3">
+              <span className="hidden text-xs text-slate-400 md:inline">@{username}</span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-800"
+              >
+                Sign out
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -387,16 +451,33 @@ function Dashboard() {
             ? [
                 { label: 'Current equity', value: inr(p.equity) },
                 { label: 'Open positions', value: String(p.positions.length) },
-                { label: 'Restores to', value: inr(p.starting_cash) },
+                { label: 'Restores to', value: newEquity ? inr(Number(newEquity) || 0) : inr(p.starting_cash) },
               ]
             : []
         }
-        note="All positions, orders and trade history are erased. This cannot be undone."
-        confirmLabel="Reset everything"
+        note="All positions, orders and trade history are erased. This cannot be undone. To change your starting equity at the same time, enter a new amount below."
+        confirmLabel={newEquity ? 'Reset with new equity' : 'Reset everything'}
         busy={resetting}
         onConfirm={doReset}
-        onCancel={() => setConfirmReset(false)}
-      />
+        onCancel={() => {
+          setConfirmReset(false)
+          setNewEquity('')
+        }}
+      >
+        <label className="mt-3 block text-xs text-slate-400">
+          New starting equity (₹) — optional
+          <input
+            type="number"
+            min={1000}
+            max={1000000000}
+            step={1000}
+            value={newEquity}
+            onChange={(e) => setNewEquity(e.target.value)}
+            placeholder={p ? String(p.starting_cash) : '1000000'}
+            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-slate-500 focus:outline-none"
+          />
+        </label>
+      </ConfirmDialog>
     </div>
   )
 }

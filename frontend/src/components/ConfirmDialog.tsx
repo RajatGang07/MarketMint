@@ -21,6 +21,7 @@ export function ConfirmDialog({
   busy = false,
   onConfirm,
   onCancel,
+  children,
 }: {
   open: boolean
   title: string
@@ -31,6 +32,7 @@ export function ConfirmDialog({
   busy?: boolean
   onConfirm: () => void
   onCancel: () => void
+  children?: React.ReactNode
 }) {
   useEffect(() => {
     if (!open) return
@@ -73,6 +75,7 @@ export function ConfirmDialog({
         ) : null}
 
         {note ? <p className="mt-3 text-xs leading-relaxed text-slate-500">{note}</p> : null}
+        {children}
 
         <div className="mt-5 flex gap-2">
           <button

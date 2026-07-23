@@ -3,6 +3,29 @@
 // VITE_API_BASE overrides both (e.g. a Vercel frontend pointing at Render).
 const BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? 'http://localhost:8000' : '')
 
+const TOKEN_KEY = 'paper-trading.session'
+
+export const session = {
+  token: (): string | null => localStorage.getItem(TOKEN_KEY),
+  set: (token: string) => localStorage.setItem(TOKEN_KEY, token),
+  clear: () => localStorage.removeItem(TOKEN_KEY),
+}
+
+/** Fired when the API answers 401 — the app returns to the sign-in screen. */
+export const AUTH_REQUIRED_EVENT = 'marketmint:auth-required'
+
+export interface Session {
+  token: string
+  username: string
+  starting_cash: number
+}
+
+export interface Me {
+  username: string
+  starting_cash: number
+  cash: number
+}
+
 export interface ProviderStatus {
   name: string
   healthy: boolean
@@ -294,7 +317,15 @@ export interface SignalsBoard {
 export type ChartRange = '1d' | '5d' | '1mo' | '3mo' | '1y'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, init)
+  const headers = new Headers(init?.headers)
+  const token = session.token()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const res = await fetch(`${BASE}${path}`, { ...init, headers })
+  if (res.status === 401) {
+    session.clear()
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT))
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null)
     const detail = body && typeof body === 'object' ? (body as { detail?: string }).detail : null
@@ -307,6 +338,27 @@ const list = (symbols: string[]) => encodeURIComponent(symbols.join(','))
 
 export const api = {
   health: () => req<Health>('/health'),
+
+  signup: (username: string, password: string, startingCash?: number) =>
+    req<Session>('/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, starting_cash: startingCash ?? null }),
+    }),
+  login: (username: string, password: string) =>
+    req<Session>('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => req<{ status: string }>('/auth/logout', { method: 'POST' }),
+  me: () => req<Me>('/auth/me'),
+  setEquity: (startingCash: number) =>
+    req<Portfolio>('/portfolio/equity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starting_cash: startingCash }),
+    }),
 
   ltp: (symbols: string[]) => req<Ltp[]>(`/market/ltp?symbols=${list(symbols)}`),
   quote: (symbol: string) => req<Quote>(`/market/quote?symbol=${encodeURIComponent(symbol)}`),

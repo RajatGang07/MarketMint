@@ -103,6 +103,17 @@ type Account struct {
 	StartingCash decimal.Decimal
 	Cash         decimal.Decimal
 	CreatedAt    time.Time
+	// PasswordHash is nil for legacy accounts created before auth existed.
+	PasswordHash *string
+}
+
+// Session is one login; the token is an opaque random string held by the
+// client and looked up here on every request.
+type Session struct {
+	Token     string
+	AccountID int64
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 type Position struct {
@@ -165,15 +176,95 @@ type Trade struct {
 // Accounts
 // ---------------------------------------------------------------------------
 
-const accountCols = `id, name, starting_cash, cash, created_at`
+const accountCols = `id, name, starting_cash, cash, created_at, password_hash`
 
 func scanAccount(row pgx.Row) (Account, error) {
 	var a Account
-	err := row.Scan(&a.ID, &a.Name, &a.StartingCash, &a.Cash, &a.CreatedAt)
+	err := row.Scan(&a.ID, &a.Name, &a.StartingCash, &a.Cash, &a.CreatedAt, &a.PasswordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
 	return a, err
+}
+
+// ErrNameTaken distinguishes "username exists" from infrastructure failures.
+var ErrNameTaken = errors.New("username already taken")
+
+// CreateUser registers a new account with its own starting equity.
+func (s *Store) CreateUser(ctx context.Context, name, passwordHash string, startingCash decimal.Decimal) (Account, error) {
+	const q = `
+		INSERT INTO accounts (name, starting_cash, cash, password_hash)
+		VALUES ($1, $2, $2, $3)
+		ON CONFLICT (name) DO NOTHING
+		RETURNING ` + accountCols
+	acct, err := scanAccount(s.Pool.QueryRow(ctx, q, name, startingCash, passwordHash))
+	if errors.Is(err, ErrNotFound) {
+		return Account{}, ErrNameTaken
+	}
+	return acct, err
+}
+
+// GetAccountByName is the login lookup.
+func (s *Store) GetAccountByName(ctx context.Context, name string) (Account, error) {
+	const q = `SELECT ` + accountCols + ` FROM accounts WHERE name = $1`
+	return scanAccount(s.Pool.QueryRow(ctx, q, name))
+}
+
+// SetStartingCash re-bases an account: new starting equity, positions and
+// history wiped — the "change my equity to any number" operation.
+func SetStartingCash(ctx context.Context, tx pgx.Tx, accountID int64, cash decimal.Decimal) error {
+	if err := ResetAccount(ctx, tx, accountID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE accounts SET starting_cash = $2, cash = $2 WHERE id = $1`, accountID, cash)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+func (s *Store) CreateSession(ctx context.Context, token string, accountID int64, ttl time.Duration) error {
+	_, err := s.Pool.Exec(ctx,
+		`INSERT INTO sessions (token, account_id, expires_at) VALUES ($1, $2, now() + $3::interval)`,
+		token, accountID, fmt.Sprintf("%d seconds", int(ttl.Seconds())))
+	return err
+}
+
+// SessionAccount resolves a token to its account, if the session is alive.
+// Columns are table-qualified: both tables carry created_at.
+func (s *Store) SessionAccount(ctx context.Context, token string) (Account, error) {
+	const q = `
+		SELECT a.id, a.name, a.starting_cash, a.cash, a.created_at, a.password_hash
+		FROM accounts a
+		JOIN sessions s ON s.account_id = a.id
+		WHERE s.token = $1 AND s.expires_at > now()`
+	return scanAccount(s.Pool.QueryRow(ctx, q, token))
+}
+
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	_, err := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, token)
+	return err
+}
+
+// AccountIDsWithOpenOrders feeds the matcher: every account that has resting
+// orders to try, not just one hard-wired default.
+func (s *Store) AccountIDsWithOpenOrders(ctx context.Context) ([]int64, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT DISTINCT account_id FROM orders WHERE status = 'OPEN'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // EnsureAccount returns the named paper account, creating it with the given
