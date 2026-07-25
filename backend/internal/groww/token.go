@@ -33,6 +33,10 @@ type TokenSource struct {
 	mu      sync.Mutex
 	token   string
 	expires time.Time // zero means "static token, never refresh"
+	// After a failed mint, wait before trying again: the token endpoint is
+	// itself rate limited, and a fallback chain probing every couple of
+	// minutes must not hammer it all day.
+	nextMintAttempt time.Time
 }
 
 // NewTokenSource builds a source. staticToken wins if present; otherwise
@@ -63,7 +67,17 @@ func (t *TokenSource) Token(ctx context.Context) (string, error) {
 	if t.apiKey == "" || t.secret == "" {
 		return "", fmt.Errorf("groww: no access token and no api key/secret to mint one")
 	}
-	return t.mint(ctx)
+	if time.Now().Before(t.nextMintAttempt) {
+		return "", fmt.Errorf("groww: token mint on cool-down until %s (previous attempt was rate limited or failed)",
+			t.nextMintAttempt.Format(time.Kitchen))
+	}
+	token, err := t.mint(ctx)
+	if err != nil {
+		t.nextMintAttempt = time.Now().Add(15 * time.Minute)
+		return "", err
+	}
+	t.nextMintAttempt = time.Time{}
+	return token, nil
 }
 
 // Invalidate drops the cached token so the next call mints a fresh one. Called
