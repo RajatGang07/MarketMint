@@ -15,3 +15,7 @@ frontend/dist/
 # Embedded UI: build.sh copies frontend/dist here; only the placeholder is tracked.
 backend/internal/web/dist/*
 !backend/internal/web/dist/index.html
+
+# Market data export (large, not source)
+groww_market_data/
+groww_market_data_*.zip

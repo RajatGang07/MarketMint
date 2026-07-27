@@ -39,6 +39,11 @@ type Config struct {
 	InstrumentsURL string
 	InstrumentsDir string
 
+	// Anthropic credentials for news sentiment in the forecast tab. Optional:
+	// without a key the forecaster falls back to keyword-lexicon sentiment.
+	AnthropicAPIKey string
+	AnthropicModel  string
+
 	// Paper account
 	StartingCash       decimal.Decimal
 	DefaultAccountName string
@@ -72,6 +77,8 @@ func Load() (Config, error) {
 		MarketDataProviders: splitCSV(strings.ToLower(env("MARKET_DATA_PROVIDERS", "groww,yahoo,mock"))),
 		InstrumentsURL:      env("INSTRUMENTS_URL", "https://growwapi-assets.groww.in/instruments/instrument.csv"),
 		InstrumentsDir:      env("INSTRUMENTS_CACHE_DIR", os.TempDir()),
+		AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicModel:      env("ANTHROPIC_MODEL", "claude-opus-5"),
 		StartingCash:        cash,
 		DefaultAccountName:  env("DEFAULT_ACCOUNT_NAME", "default"),
 		MatchInterval:       interval,

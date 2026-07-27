@@ -314,6 +314,53 @@ export interface SignalsBoard {
   caveats: string[]
 }
 
+export interface ForecastDriver {
+  name: string
+  detail: string
+  score: number
+  weight: number
+}
+
+export type ForecastHorizon = 'seconds' | 'intraday' | 'close' | 'next_day'
+
+export interface ForecastLean {
+  horizon: ForecastHorizon
+  label: string
+  direction: 'up' | 'down' | 'flat'
+  probability_up: number
+  confidence: 'none' | 'low' | 'medium'
+  drivers?: ForecastDriver[]
+  note?: string
+}
+
+export interface NewsItem {
+  title: string
+  source?: string
+  url?: string
+  published: string
+  sentiment: number
+}
+
+export interface NewsResult {
+  items: NewsItem[] | null
+  overall: number
+  method: 'claude' | 'lexicon' | 'none'
+  caveats?: string[]
+}
+
+export interface Forecast {
+  symbol: string
+  name?: string
+  as_of: string
+  last_price: number
+  change_pct: number
+  session_open: boolean
+  leans: ForecastLean[]
+  news: NewsResult
+  price_source?: string
+  caveats: string[]
+}
+
 export type ChartRange = '1d' | '5d' | '1mo' | '3mo' | '1y'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -377,6 +424,8 @@ export const api = {
   intraday: (risk?: number) =>
     req<IntradayResult>(`/analytics/intraday${risk ? `?risk=${risk}` : ''}`),
   signals: () => req<SignalsBoard>('/analytics/signals'),
+  forecast: (symbol: string) =>
+    req<Forecast>(`/analytics/forecast?symbol=${encodeURIComponent(symbol)}`),
 
   placeOrder: (body: OrderRequest) =>
     req<Order>('/orders', {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/forecast"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/instruments"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/intraday"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/marketdata"
@@ -40,6 +41,7 @@ type Server struct {
 	analytics *analytics.Engine
 	intraday  *intraday.Scanner
 	signals   *signals.Composer
+	forecast  *forecast.Engine
 	auth      *auth.Service
 	log       *slog.Logger
 }
@@ -63,6 +65,7 @@ func NewServer(
 	analyticsEngine *analytics.Engine,
 	intradayScanner *intraday.Scanner,
 	signalsBoard *signals.Composer,
+	forecastEngine *forecast.Engine,
 	authService *auth.Service,
 	log *slog.Logger,
 ) *Server {
@@ -74,6 +77,7 @@ func NewServer(
 		analytics: analyticsEngine,
 		intraday:  intradayScanner,
 		signals:   signalsBoard,
+		forecast:  forecastEngine,
 		auth:      authService,
 		log:       log,
 	}
@@ -137,6 +141,7 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 	r.With(slow, s.requireAuth).Get("/analytics/recommendations", s.handleRecommendations)
 	r.With(slow, s.requireAuth).Get("/analytics/intraday", s.handleIntraday)
 	r.With(slow, s.requireAuth).Get("/analytics/signals", s.handleSignals)
+	r.With(slow, s.requireAuth).Get("/analytics/forecast", s.handleForecast)
 
 	r.Route("/orders", func(r chi.Router) {
 		r.Use(quick, s.requireAuth)
@@ -479,6 +484,24 @@ func (s *Server) handleSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, board)
+}
+
+// handleForecast answers the Forecast tab: multi-horizon directional leans
+// for one symbol, with drivers, news sentiment and honest caveats.
+func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
+	symbol := marketdata.Normalise(r.URL.Query().Get("symbol"))
+	if symbol == "" {
+		writeErr(w, http.StatusBadRequest, "symbol is required")
+		return
+	}
+	exchange := queryOr(r, "exchange", "NSE")
+
+	res, err := s.forecast.Run(r.Context(), exchange, symbol)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "forecast failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // ---------------------------------------------------------------------------

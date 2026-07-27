@@ -16,11 +16,13 @@ import (
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/config"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/forecast"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/groww"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/httpapi"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/instruments"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/intraday"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/marketdata"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/news"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/paper"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/signals"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/store"
@@ -73,6 +75,13 @@ func run(log *slog.Logger) error {
 	scanner := analytics.New(market, universe, log)
 	orb := intraday.NewScanner(market, universe, log)
 	board := signals.New(scanner, orb, st, market)
+	// News sentiment degrades gracefully: no ANTHROPIC_API_KEY means the
+	// keyword lexicon scores headlines, and no internet means "no news".
+	if cfg.AnthropicAPIKey == "" {
+		log.Info("forecast news: no ANTHROPIC_API_KEY; using keyword-lexicon sentiment")
+	}
+	newsFetcher := news.New(cfg.AnthropicAPIKey, cfg.AnthropicModel, log)
+	forecaster := forecast.New(market, universe, newsFetcher, log)
 	authSvc := auth.New(st)
 
 	// Resting LIMIT orders are matched in the background for every account,
@@ -81,7 +90,7 @@ func run(log *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, authSvc, log).Routes(cfg.CORSOrigins),
+		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, forecaster, authSvc, log).Routes(cfg.CORSOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
