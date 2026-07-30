@@ -366,6 +366,7 @@ export interface AutopilotSettings {
   max_positions: number
   max_capital_per_trade: number
   trail_stops: boolean
+  exit_style: 'trail' | 'bracket'
   updated_at?: string
 }
 
@@ -376,6 +377,27 @@ export interface AutopilotLogEntry {
   symbol?: string
   detail: string
   order_ref?: string
+}
+
+export interface HorizonAccuracy {
+  horizon: string
+  n: number
+  hits: number
+  hit_rate: number
+  brier: number
+}
+
+export interface Performance {
+  closed_trades: number
+  wins: number
+  losses: number
+  win_rate: number
+  avg_win: number
+  avg_loss: number
+  expectancy: number
+  profit_factor: number
+  total_pnl: number
+  max_drawdown: number
 }
 
 export type ChartRange = '1d' | '5d' | '1mo' | '3mo' | '1y'
@@ -452,6 +474,8 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   autopilotLog: (limit = 100) => req<AutopilotLogEntry[]>(`/autopilot/log?limit=${limit}`),
+  forecastAccuracy: () => req<HorizonAccuracy[]>('/analytics/forecast/accuracy'),
+  performance: () => req<Performance>('/portfolio/performance'),
 
   placeOrder: (body: OrderRequest) =>
     req<Order>('/orders', {

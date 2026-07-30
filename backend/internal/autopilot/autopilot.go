@@ -7,9 +7,9 @@
 // The rules, in full:
 //
 //	BUY   a board BUY row (top-decile momentum rank with a risk-sized plan)
-//	      becomes a MARKET buy with a server-side bracket: stop-loss at the
-//	      plan's stop, target at the plan's target, and — when enabled — a
-//	      trailing stop that ratchets up by the initial risk distance.
+//	      becomes a MARKET buy with a server-side exit. Two styles: "trail"
+//	      (default) arms a trailing stop and no target, riding the trend
+//	      until it bends; "bracket" adds a fixed target that banks ~2R.
 //	SELL  a board SELL row (rank collapsed, RSI blow-off, or an undefended
 //	      loser) becomes a MARKET sell of the whole holding — unless a
 //	      protective exit is already resting, in which case the bracket is
@@ -33,6 +33,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/marketdata"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/paper"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/signals"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/store"
@@ -43,11 +44,12 @@ type Runner struct {
 	engine  *paper.Engine
 	signals *signals.Composer
 	store   *store.Store
+	market  marketdata.Provider
 	log     *slog.Logger
 }
 
-func New(engine *paper.Engine, composer *signals.Composer, st *store.Store, log *slog.Logger) *Runner {
-	return &Runner{engine: engine, signals: composer, store: st, log: log}
+func New(engine *paper.Engine, composer *signals.Composer, st *store.Store, market marketdata.Provider, log *slog.Logger) *Runner {
+	return &Runner{engine: engine, signals: composer, store: st, market: market, log: log}
 }
 
 // Run loops until ctx ends. The first pass fires one interval in, not at
@@ -69,6 +71,14 @@ func (r *Runner) Run(ctx context.Context, every time.Duration) {
 // Pass trades every enabled account once. Exported so a settings change can
 // trigger an immediate cycle instead of waiting out the ticker.
 func (r *Runner) Pass(ctx context.Context) {
+	// Never trade simulated prices: fills against the mock feed would book
+	// meaningless P&L into a real learning ledger. Resting exits still work —
+	// this only pauses NEW decisions until a live source recovers.
+	if chain, ok := r.market.(*marketdata.Chain); ok && chain.Active() == "simulator" {
+		r.log.Info("autopilot: price feed is simulated; skipping trading pass")
+		return
+	}
+
 	ids, err := r.store.AutopilotEnabledAccounts(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -231,19 +241,29 @@ func Decide(rows []signals.Row, settings store.AutopilotSettings, snap Snapshot)
 			req := &paper.OrderRequest{
 				TradingSymbol: row.Symbol, Exchange: "NSE", Segment: "CASH", Product: "CNC",
 				TransactionType: "BUY", OrderType: "MARKET", Quantity: qty,
-				StopLoss: dec(plan.StopLoss), Target: dec(plan.Target),
+				StopLoss: dec(plan.StopLoss),
 			}
-			detail := fmt.Sprintf("buying %d shares ≈%s with stop %s / target %s. %s",
-				qty, capital.StringFixed(0), plan.StopLoss.StringFixed(2), plan.Target.StringFixed(2), reasons(row))
-			if sizedDown {
-				detail += fmt.Sprintf(" Sized down from the plan's %d shares to fit the capital caps.", plan.Quantity)
+			var detail string
+			if settings.ExitStyle == "bracket" {
+				// Fixed target: banks the win at ~2R, caps the right tail.
+				req.Target = dec(plan.Target)
+				detail = fmt.Sprintf("buying %d shares ≈%s with stop %s / target %s. %s",
+					qty, capital.StringFixed(0), plan.StopLoss.StringFixed(2), plan.Target.StringFixed(2), reasons(row))
+			} else {
+				// Ride the trend: no target — the trailing stop is the only
+				// exit, so a runner is never cut short at a fixed price.
+				detail = fmt.Sprintf("buying %d shares ≈%s with stop %s, no target — riding the trend. %s",
+					qty, capital.StringFixed(0), plan.StopLoss.StringFixed(2), reasons(row))
 			}
-			if settings.TrailStops {
+			if settings.TrailStops || settings.ExitStyle != "bracket" {
 				trail := plan.Entry.Sub(plan.StopLoss)
 				if trail.IsPositive() {
 					req.TrailBy = dec(trail)
 					detail += fmt.Sprintf(" Stop trails by %s once price runs.", trail.StringFixed(2))
 				}
+			}
+			if sizedDown {
+				detail += fmt.Sprintf(" Sized down from the plan's %d shares to fit the capital caps.", plan.Quantity)
 			}
 			out = append(out, Decision{Action: "BUY", Symbol: row.Symbol, Detail: detail, Order: req})
 			slots--

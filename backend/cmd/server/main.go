@@ -82,8 +82,8 @@ func run(log *slog.Logger) error {
 		log.Info("forecast news: no ANTHROPIC_API_KEY; using keyword-lexicon sentiment")
 	}
 	newsFetcher := news.New(cfg.AnthropicAPIKey, cfg.AnthropicModel, log)
-	forecaster := forecast.New(market, universe, newsFetcher, log)
-	pilot := autopilot.New(engine, board, st, log)
+	forecaster := forecast.New(market, universe, newsFetcher, st, log)
+	pilot := autopilot.New(engine, board, st, market, log)
 	authSvc := auth.New(st)
 
 	// Resting LIMIT orders are matched in the background for every account,
@@ -92,6 +92,9 @@ func run(log *slog.Logger) error {
 	// The autopilot trades enabled accounts on its own cadence; each pass
 	// re-reads settings, so toggling in the UI needs no restart.
 	go pilot.Run(ctx, cfg.AutopilotInterval)
+	// Matured forecasts are scored in the background — the Forecast tab's
+	// track record is measured, never asserted.
+	go forecaster.RunResolver(ctx, 2*time.Minute)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-import { api, type AutopilotLogEntry, type AutopilotSettings } from '../lib/api'
-import { dateTimeOf } from '../lib/format'
+import { api, type AutopilotLogEntry, type AutopilotSettings, type Performance } from '../lib/api'
+import { dateTimeOf, inr, signedInr } from '../lib/format'
 import { useToast } from '../lib/toast'
 import { usePoll } from '../lib/usePoll'
 
@@ -25,6 +25,7 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
   const [maxPositions, setMaxPositions] = useState('5')
   const [maxCapital, setMaxCapital] = useState('200000')
   const [trailStops, setTrailStops] = useState(true)
+  const [exitStyle, setExitStyle] = useState<'trail' | 'bracket'>('trail')
 
   useEffect(() => {
     if (!active || settings) return
@@ -35,6 +36,7 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
         setMaxPositions(String(s.max_positions))
         setMaxCapital(String(s.max_capital_per_trade))
         setTrailStops(s.trail_stops)
+        setExitStyle(s.exit_style === 'bracket' ? 'bracket' : 'trail')
       })
       .catch((err: Error) => toast.push('error', err.message))
   }, [active, settings, toast])
@@ -42,6 +44,11 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
   const log = usePoll<AutopilotLogEntry[]>(
     () => (active ? api.autopilotLog() : Promise.resolve([] as AutopilotLogEntry[])),
     15_000,
+    [active],
+  )
+  const perf = usePoll<Performance | null>(
+    () => (active ? api.performance() : Promise.resolve(null)),
+    30_000,
     [active],
   )
 
@@ -52,6 +59,7 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
       max_positions: Number(maxPositions) || settings.max_positions,
       max_capital_per_trade: Number(maxCapital) || settings.max_capital_per_trade,
       trail_stops: trailStops,
+      exit_style: exitStyle,
     }
     setSaving(true)
     try {
@@ -145,15 +153,52 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
               />
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-slate-300">
-              <input
-                type="checkbox"
-                checked={trailStops}
-                onChange={(e) => setTrailStops(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-600 bg-slate-950"
-              />
-              Trail stops as price runs (locks in gains)
-            </label>
+            <div className="space-y-1.5 text-xs text-slate-300">
+              <div className="text-slate-400">Exit style</div>
+              <label className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="exit-style"
+                  checked={exitStyle === 'trail'}
+                  onChange={() => setExitStyle('trail')}
+                  className="mt-0.5 h-4 w-4 border-slate-600 bg-slate-950"
+                />
+                <span>
+                  Ride the trend <span className="text-slate-500">(recommended)</span>
+                  <span className="block text-[10px] leading-snug text-slate-500">
+                    Trailing stop only, no fixed target — momentum profits live in the few big runners this
+                    style refuses to cut short.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="exit-style"
+                  checked={exitStyle === 'bracket'}
+                  onChange={() => setExitStyle('bracket')}
+                  className="mt-0.5 h-4 w-4 border-slate-600 bg-slate-950"
+                />
+                <span>
+                  Bank at target
+                  <span className="block text-[10px] leading-snug text-slate-500">
+                    Fixed target at ~2R plus stop-loss — steadier, but caps every win.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            {exitStyle === 'bracket' ? (
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={trailStops}
+                  onChange={(e) => setTrailStops(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-950"
+                />
+                Trail stops as price runs (locks in gains)
+              </label>
+            ) : null}
 
             <button
               type="button"
@@ -171,7 +216,7 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
             <ul className="list-disc space-y-1 pl-4">
               <li>
                 <span className="text-emerald-400">Buys</span> when a share ranks in the momentum top-10 with a
-                risk-sized plan — entry, stop-loss and target placed together.
+                risk-sized plan — the exit (per your style above) is placed with the entry.
               </li>
               <li>
                 <span className="text-rose-400">Sells</span> a holding when its rank collapses, RSI hits blow-off, or
@@ -179,8 +224,11 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
               </li>
               <li>One trade per share per day; skips are logged with reasons.</li>
               <li>Runs every ~10 minutes. Paper money only — no real orders exist anywhere in this platform.</li>
+              <li>Pauses automatically whenever the price feed falls back to the simulator.</li>
             </ul>
           </div>
+
+          <PerformanceCard perf={perf.data ?? null} />
         </div>
 
         {/* Decision log */}
@@ -229,6 +277,59 @@ export function Autopilot({ active, onTraded }: { active: boolean; onTraded: () 
           )}
         </div>
       </section>
+    </div>
+  )
+}
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' }) {
+  const toneCls = tone === 'up' ? 'text-emerald-400' : tone === 'down' ? 'text-rose-400' : 'text-slate-100'
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`text-sm font-semibold tabular-nums ${toneCls}`}>{value}</div>
+    </div>
+  )
+}
+
+/** Closed-trade report card: the numbers that say whether the process works. */
+function PerformanceCard({ perf }: { perf: Performance | null }) {
+  if (!perf) return null
+  if (perf.closed_trades === 0) {
+    return (
+      <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-500">
+        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Results</div>
+        No closed trades yet — statistics appear after the first exits. Judge the process on at least 20–30
+        closed trades, not the first few.
+      </div>
+    )
+  }
+  const pf = perf.profit_factor
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+      <div className="mb-3 flex items-baseline justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Results · {perf.closed_trades} closed trades
+        </span>
+        <span className={`text-sm font-semibold tabular-nums ${perf.total_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          {signedInr(perf.total_pnl)}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <Stat label="Win rate" value={`${(perf.win_rate * 100).toFixed(0)}%`} />
+        <Stat
+          label="Expectancy / trade"
+          value={signedInr(perf.expectancy)}
+          tone={perf.expectancy >= 0 ? 'up' : 'down'}
+        />
+        <Stat label="Profit factor" value={pf < 0 ? '∞' : pf.toFixed(2)} tone={pf < 0 || pf >= 1 ? 'up' : 'down'} />
+        <Stat label="Avg win" value={inr(perf.avg_win)} />
+        <Stat label="Avg loss" value={inr(perf.avg_loss)} />
+        <Stat label="Max drawdown" value={inr(perf.max_drawdown)} tone={perf.max_drawdown > 0 ? 'down' : undefined} />
+      </div>
+      <p className="mt-3 text-[10px] leading-snug text-slate-600">
+        Realised P&L only (open positions not marked). Includes manual trades on this account. Paper fills pay
+        no brokerage/STT/slippage, so live results would be lower.
+      </p>
     </div>
   )
 }

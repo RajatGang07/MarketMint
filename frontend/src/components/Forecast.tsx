@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { api, type Forecast as ForecastData, type ForecastLean, type NewsItem } from '../lib/api'
+import { api, type Forecast as ForecastData, type ForecastLean, type HorizonAccuracy, type NewsItem } from '../lib/api'
 import { inr, pct, timeOf, toneClass } from '../lib/format'
 import { SymbolSearch } from './SymbolSearch'
 
@@ -27,7 +27,15 @@ export function Forecast({ initialSymbol }: { initialSymbol?: string }) {
   const [data, setData] = useState<ForecastData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [accuracy, setAccuracy] = useState<HorizonAccuracy[] | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    api
+      .forecastAccuracy()
+      .then(setAccuracy)
+      .catch(() => setAccuracy(null)) // the strip simply hides when unavailable
+  }, [])
 
   useEffect(() => {
     if (!symbol) return
@@ -92,6 +100,8 @@ export function Forecast({ initialSymbol }: { initialSymbol?: string }) {
           ) : null}
 
           {data ? <NewsCard news={data.news} /> : null}
+
+          <TrackRecord accuracy={accuracy} />
         </div>
 
         <div className="space-y-3">
@@ -243,5 +253,52 @@ function NewsRow({ item }: { item: NewsItem }) {
         {item.source ? <span className="block text-[10px] text-slate-600">{item.source}</span> : null}
       </span>
     </li>
+  )
+}
+
+const HORIZON_LABEL: Record<string, string> = {
+  intraday: 'Next ~15 min',
+  close: 'By close',
+  next_day: 'Next session',
+}
+
+/**
+ * Measured accuracy of past forecasts — every directional lean is recorded
+ * and scored once its horizon matures. If the numbers are unflattering, they
+ * stay up anyway; that is the point.
+ */
+function TrackRecord({ accuracy }: { accuracy: HorizonAccuracy[] | null }) {
+  if (!accuracy) return null
+  const rows = accuracy.filter((a) => HORIZON_LABEL[a.horizon])
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Track record (measured)
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">
+          No scored forecasts yet. Every directional call is recorded and graded once its horizon passes —
+          the real hit rate will appear here.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((a) => (
+            <li key={a.horizon} className="flex items-baseline justify-between text-xs">
+              <span className="text-slate-300">{HORIZON_LABEL[a.horizon]}</span>
+              <span className="tabular-nums text-slate-400">
+                <span className={a.hit_rate >= 0.5 ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
+                  {(a.hit_rate * 100).toFixed(0)}%
+                </span>{' '}
+                right of {a.n}
+                {a.n < 20 ? <span className="text-slate-600"> · small sample</span> : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-[10px] leading-snug text-slate-600">
+        A coin flip scores 50%. Judge only samples of 20+ per horizon.
+      </p>
+    </div>
   )
 }

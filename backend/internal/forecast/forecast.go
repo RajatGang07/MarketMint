@@ -30,6 +30,7 @@ import (
 	"github.com/gangrajat/groww-paper-trading/backend/internal/instruments"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/marketdata"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/news"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/store"
 )
 
 // Horizon identifies one forecast window.
@@ -82,16 +83,18 @@ type Result struct {
 	Caveats     []string    `json:"caveats"`
 }
 
-// Engine runs forecasts. Stateless beyond its dependencies.
+// Engine runs forecasts. st may be nil: forecasting works without a ledger,
+// it just cannot keep score.
 type Engine struct {
 	market   marketdata.Provider
 	universe *instruments.Store
 	news     *news.Fetcher
+	store    *store.Store
 	log      *slog.Logger
 }
 
-func New(market marketdata.Provider, universe *instruments.Store, newsFetcher *news.Fetcher, log *slog.Logger) *Engine {
-	return &Engine{market: market, universe: universe, news: newsFetcher, log: log}
+func New(market marketdata.Provider, universe *instruments.Store, newsFetcher *news.Fetcher, st *store.Store, log *slog.Logger) *Engine {
+	return &Engine{market: market, universe: universe, news: newsFetcher, store: st, log: log}
 }
 
 // istZone matches the exchange clock (same convention as package intraday).
@@ -139,6 +142,7 @@ func (e *Engine) Run(ctx context.Context, exchange, symbol string) (Result, erro
 	tech := analyzeDaily(daily, last)
 	flow := analyzeIntraday(intra, now)
 	nw := e.news.ForSymbol(ctx, symbol, name)
+	regime := e.marketRegime(ctx, now)
 
 	open := sessionOpen(now)
 	res := Result{
@@ -152,14 +156,15 @@ func (e *Engine) Run(ctx context.Context, exchange, symbol string) (Result, erro
 		Leans: []Lean{
 			secondsLean(),
 			intradayLean(flow, nw, open),
-			closeLean(tech, flow, nw, open),
-			nextDayLean(tech, nw),
+			closeLean(tech, flow, nw, regime, open),
+			nextDayLean(tech, nw, regime),
 		},
 		Caveats: caveats(tech, flow, open),
 	}
 	if chain, ok := e.market.(*marketdata.Chain); ok {
 		res.PriceSource = chain.Active()
 	}
+	e.record(ctx, res)
 	return res, nil
 }
 
@@ -301,6 +306,55 @@ func analyzeIntraday(bars []bar, now time.Time) flowView {
 	return v
 }
 
+// regimeView says which way the overall market is leaning. Momentum edges
+// historically concentrate in up-regimes and crash in down-regimes, so the
+// index trend is context every stock forecast should carry.
+type regimeView struct {
+	ok      bool
+	bull    bool
+	distPct float64 // last close vs 50-day SMA, in percent
+}
+
+// marketRegime reads the NIFTY 50 through NIFTYBEES (the ETF trades like any
+// NSE share, so every provider in the chain can quote it — the ^NSEI index
+// symbol would need special-casing per provider).
+func (e *Engine) marketRegime(ctx context.Context, now time.Time) regimeView {
+	bars, err := e.bars(ctx, "NSE", "NIFTYBEES", 1440, now.AddDate(0, -6, 0), now)
+	if err != nil || len(bars) < 55 {
+		if err != nil {
+			e.log.Warn("forecast: market regime unavailable", "err", err)
+		}
+		return regimeView{}
+	}
+	closes := make([]float64, len(bars))
+	for i, b := range bars {
+		closes[i] = b.Close
+	}
+	end := len(closes) - 1
+	ma := sma(closes, end, 50)
+	if ma <= 0 {
+		return regimeView{}
+	}
+	last := closes[end]
+	return regimeView{ok: true, bull: last > ma, distPct: (last/ma - 1) * 100}
+}
+
+func regimeDriver(r regimeView, weight float64) Driver {
+	d := Driver{Name: "Market regime", Weight: weight}
+	if !r.ok {
+		d.Detail = "Index trend unavailable; regime contributes nothing to this lean."
+		return d
+	}
+	if r.bull {
+		d.Score = clampScore(0.3 + r.distPct/10)
+		d.Detail = fmt.Sprintf("NIFTY is %+.1f%% above its 50-day average — an up-regime; momentum signals historically work best here.", r.distPct)
+	} else {
+		d.Score = clampScore(-0.3 + r.distPct/10)
+		d.Detail = fmt.Sprintf("NIFTY is %.1f%% below its 50-day average — a down-regime; long momentum entries historically struggle here.", r.distPct)
+	}
+	return d
+}
+
 // ---------------------------------------------------------------------------
 // Leans
 // ---------------------------------------------------------------------------
@@ -369,7 +423,7 @@ func intradayLean(f flowView, nw news.Result, open bool) Lean {
 	return l
 }
 
-func closeLean(t techView, f flowView, nw news.Result, open bool) Lean {
+func closeLean(t techView, f flowView, nw news.Result, rg regimeView, open bool) Lean {
 	l := Lean{Horizon: HorizonClose, Label: "By today's close"}
 	if !t.ok && !f.ok {
 		l.Direction, l.ProbabilityUp, l.Confidence = "flat", 50, "none"
@@ -378,7 +432,7 @@ func closeLean(t techView, f flowView, nw news.Result, open bool) Lean {
 	}
 	if f.ok {
 		l.Drivers = append(l.Drivers,
-			Driver{Name: "Price vs VWAP", Weight: 0.25, Score: clampScore(f.vsVWAP * 400),
+			Driver{Name: "Price vs VWAP", Weight: 0.20, Score: clampScore(f.vsVWAP * 400),
 				Detail: fmt.Sprintf("Trading %+.2f%% vs VWAP; institutional flow tends to defend this line into the close.", f.vsVWAP*100)},
 			Driver{Name: "Buy/sell volume proxy", Weight: 0.20, Score: clampScore((f.upVolShare - 0.5) * 4),
 				Detail: fmt.Sprintf("%.0f%% of volume on rising bars (proxy — no depth feed).", f.upVolShare*100)},
@@ -386,13 +440,13 @@ func closeLean(t techView, f flowView, nw news.Result, open bool) Lean {
 	}
 	if t.ok {
 		l.Drivers = append(l.Drivers,
-			Driver{Name: "Daily trend", Weight: 0.20, Score: trendScore(t),
+			Driver{Name: "Daily trend", Weight: 0.15, Score: trendScore(t),
 				Detail: trendDetail(t)},
-			Driver{Name: "RSI(14)", Weight: 0.15, Score: rsiScore(t.rsi14),
+			Driver{Name: "RSI(14)", Weight: 0.10, Score: rsiScore(t.rsi14),
 				Detail: fmt.Sprintf("RSI %.0f — %s.", t.rsi14, rsiWord(t.rsi14))},
 		)
 	}
-	l.Drivers = append(l.Drivers, newsDriver(nw, 0.20))
+	l.Drivers = append(l.Drivers, newsDriver(nw, 0.15), regimeDriver(rg, 0.20))
 
 	score := weightedScore(l.Drivers)
 	l.ProbabilityUp = squash(score)
@@ -408,7 +462,7 @@ func closeLean(t techView, f flowView, nw news.Result, open bool) Lean {
 	return l
 }
 
-func nextDayLean(t techView, nw news.Result) Lean {
+func nextDayLean(t techView, nw news.Result, rg regimeView) Lean {
 	l := Lean{Horizon: HorizonNextDay, Label: "Next session / short swing"}
 	if !t.ok {
 		l.Direction, l.ProbabilityUp, l.Confidence = "flat", 50, "none"
@@ -416,17 +470,18 @@ func nextDayLean(t techView, nw news.Result) Lean {
 		return l
 	}
 	l.Drivers = []Driver{
-		{Name: "Momentum (1 month)", Weight: 0.25, Score: clampScore(t.momentum20 * 8),
+		{Name: "Momentum (1 month)", Weight: 0.20, Score: clampScore(t.momentum20 * 8),
 			Detail: fmt.Sprintf("%+.1f%% over ~20 sessions. Cross-sectional momentum is the best-evidenced equity signal at this horizon.", t.momentum20*100)},
-		{Name: "Momentum (3 months)", Weight: 0.20, Score: clampScore(t.momentum60 * 4),
+		{Name: "Momentum (3 months)", Weight: 0.15, Score: clampScore(t.momentum60 * 4),
 			Detail: fmt.Sprintf("%+.1f%% over ~60 sessions.", t.momentum60*100)},
-		{Name: "Trend persistence", Weight: 0.20, Score: clampScore((t.trendPersistence - 0.5) * 3),
+		{Name: "Trend persistence", Weight: 0.15, Score: clampScore((t.trendPersistence - 0.5) * 3),
 			Detail: fmt.Sprintf("Closed above the 20-day average in %.0f%% of the last 60 sessions — %s.", t.trendPersistence*100, persistenceWord(t.trendPersistence))},
 		{Name: "Moving averages", Weight: 0.10, Score: trendScore(t),
 			Detail: trendDetail(t)},
 		{Name: "RSI(14)", Weight: 0.10, Score: rsiScore(t.rsi14),
 			Detail: fmt.Sprintf("RSI %.0f — %s.", t.rsi14, rsiWord(t.rsi14))},
-		newsDriver(nw, 0.15),
+		newsDriver(nw, 0.10),
+		regimeDriver(rg, 0.20),
 	}
 	score := weightedScore(l.Drivers)
 	l.ProbabilityUp = squash(score)

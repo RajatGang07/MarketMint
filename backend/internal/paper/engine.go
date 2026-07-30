@@ -114,19 +114,26 @@ func (r *OrderRequest) normalise() error {
 		r.TriggerPrice = nil
 	}
 
-	// Bracket parameters only make sense on a BUY.
+	// Bracket parameters only make sense on a BUY. The target is optional: a
+	// stop-only bracket (usually trailing) rides the trend instead of capping
+	// the win at a fixed price.
 	if r.StopLoss != nil || r.Target != nil {
 		if r.TransactionType != "BUY" {
 			return reject("stop_loss/target brackets are only supported on BUY orders")
 		}
-		if r.StopLoss == nil || r.Target == nil {
-			return reject("a bracket needs both stop_loss and target")
+		if r.StopLoss == nil {
+			return reject("a bracket needs a stop_loss")
 		}
-		if !r.StopLoss.IsPositive() || !r.Target.IsPositive() {
-			return reject("stop_loss and target must be positive")
+		if !r.StopLoss.IsPositive() {
+			return reject("stop_loss must be positive")
 		}
-		if r.StopLoss.GreaterThanOrEqual(*r.Target) {
-			return reject("stop_loss must be below target")
+		if r.Target != nil {
+			if !r.Target.IsPositive() {
+				return reject("target must be positive")
+			}
+			if r.StopLoss.GreaterThanOrEqual(*r.Target) {
+				return reject("stop_loss must be below target")
+			}
 		}
 	}
 	if r.TrailBy != nil {
@@ -319,6 +326,11 @@ func (e *Engine) spawnBracket(ctx context.Context, tx pgx.Tx, acct store.Account
 		return err
 	}
 
+	// A stop-only bracket has no target leg: the (usually trailing) stop is
+	// the sole exit, so winners are never capped at a fixed price.
+	if parent.Target == nil {
+		return nil
+	}
 	tgtRef, err := newOrderRef()
 	if err != nil {
 		return err

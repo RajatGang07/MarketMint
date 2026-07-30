@@ -17,7 +17,10 @@ type AutopilotSettings struct {
 	MaxPositions       int             `json:"max_positions"`
 	MaxCapitalPerTrade decimal.Decimal `json:"max_capital_per_trade"`
 	TrailStops         bool            `json:"trail_stops"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	// ExitStyle is "trail" (ride the trend on a trailing stop alone) or
+	// "bracket" (also cap the win at the plan's fixed target).
+	ExitStyle string    `json:"exit_style"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // DefaultAutopilotSettings is what an account gets before it ever saves.
@@ -27,16 +30,17 @@ func DefaultAutopilotSettings(accountID int64) AutopilotSettings {
 		MaxPositions:       5,
 		MaxCapitalPerTrade: decimal.NewFromInt(200_000),
 		TrailStops:         true,
+		ExitStyle:          "trail",
 	}
 }
 
 // AutopilotSettingsFor returns the saved policy, or defaults when none exists.
 func (s *Store) AutopilotSettingsFor(ctx context.Context, accountID int64) (AutopilotSettings, error) {
 	row := s.Pool.QueryRow(ctx, `
-		SELECT account_id, enabled, max_positions, max_capital_per_trade, trail_stops, updated_at
+		SELECT account_id, enabled, max_positions, max_capital_per_trade, trail_stops, exit_style, updated_at
 		FROM autopilot_settings WHERE account_id = $1`, accountID)
 	var a AutopilotSettings
-	err := row.Scan(&a.AccountID, &a.Enabled, &a.MaxPositions, &a.MaxCapitalPerTrade, &a.TrailStops, &a.UpdatedAt)
+	err := row.Scan(&a.AccountID, &a.Enabled, &a.MaxPositions, &a.MaxCapitalPerTrade, &a.TrailStops, &a.ExitStyle, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DefaultAutopilotSettings(accountID), nil
 	}
@@ -46,15 +50,16 @@ func (s *Store) AutopilotSettingsFor(ctx context.Context, accountID int64) (Auto
 // SaveAutopilotSettings upserts the policy.
 func (s *Store) SaveAutopilotSettings(ctx context.Context, a AutopilotSettings) error {
 	_, err := s.Pool.Exec(ctx, `
-		INSERT INTO autopilot_settings (account_id, enabled, max_positions, max_capital_per_trade, trail_stops, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+		INSERT INTO autopilot_settings (account_id, enabled, max_positions, max_capital_per_trade, trail_stops, exit_style, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
 		ON CONFLICT (account_id) DO UPDATE SET
 			enabled = EXCLUDED.enabled,
 			max_positions = EXCLUDED.max_positions,
 			max_capital_per_trade = EXCLUDED.max_capital_per_trade,
 			trail_stops = EXCLUDED.trail_stops,
+			exit_style = EXCLUDED.exit_style,
 			updated_at = now()`,
-		a.AccountID, a.Enabled, a.MaxPositions, a.MaxCapitalPerTrade, a.TrailStops)
+		a.AccountID, a.Enabled, a.MaxPositions, a.MaxCapitalPerTrade, a.TrailStops, a.ExitStyle)
 	return err
 }
 

@@ -146,6 +146,8 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 	r.With(slow, s.requireAuth).Get("/analytics/intraday", s.handleIntraday)
 	r.With(slow, s.requireAuth).Get("/analytics/signals", s.handleSignals)
 	r.With(slow, s.requireAuth).Get("/analytics/forecast", s.handleForecast)
+	r.With(quick, s.requireAuth).Get("/analytics/forecast/accuracy", s.handleForecastAccuracy)
+	r.With(quick, s.requireAuth).Get("/portfolio/performance", s.handlePerformance)
 
 	r.Route("/autopilot", func(r chi.Router) {
 		r.Use(quick, s.requireAuth)
@@ -515,6 +517,32 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleForecastAccuracy reports the measured track record of past forecasts.
+func (s *Server) handleForecastAccuracy(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.store.ForecastAccuracy(r.Context())
+	if err != nil {
+		s.log.Error("forecast accuracy read failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if acc == nil {
+		acc = []store.HorizonAccuracy{}
+	}
+	writeJSON(w, http.StatusOK, acc)
+}
+
+// handlePerformance reports the account's closed-trade statistics.
+func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+	account := accountFrom(r)
+	trades, err := s.store.ClosedTrades(r.Context(), account.ID)
+	if err != nil {
+		s.log.Error("performance read failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, store.ComputePerformance(trades))
+}
+
 // ---------------------------------------------------------------------------
 // Autopilot
 // ---------------------------------------------------------------------------
@@ -538,6 +566,7 @@ func (s *Server) handleAutopilotSave(w http.ResponseWriter, r *http.Request) {
 		MaxPositions       int             `json:"max_positions"`
 		MaxCapitalPerTrade decimal.Decimal `json:"max_capital_per_trade"`
 		TrailStops         bool            `json:"trail_stops"`
+		ExitStyle          string          `json:"exit_style"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -551,6 +580,10 @@ func (s *Server) handleAutopilotSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "max_capital_per_trade must be positive")
 		return
 	}
+	if body.ExitStyle != "trail" && body.ExitStyle != "bracket" {
+		writeErr(w, http.StatusBadRequest, "exit_style must be \"trail\" or \"bracket\"")
+		return
+	}
 
 	settings := store.AutopilotSettings{
 		AccountID:          account.ID,
@@ -558,6 +591,7 @@ func (s *Server) handleAutopilotSave(w http.ResponseWriter, r *http.Request) {
 		MaxPositions:       body.MaxPositions,
 		MaxCapitalPerTrade: body.MaxCapitalPerTrade,
 		TrailStops:         body.TrailStops,
+		ExitStyle:          body.ExitStyle,
 	}
 	if err := s.store.SaveAutopilotSettings(r.Context(), settings); err != nil {
 		s.log.Error("autopilot settings save failed", "err", err)

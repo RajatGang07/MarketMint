@@ -45,32 +45,43 @@ func find(t *testing.T, ds []Decision, symbol string) Decision {
 	return Decision{}
 }
 
-func TestBuyPlacesBracketWithTrail(t *testing.T) {
+func TestTrailStyleRidesTheTrend(t *testing.T) {
+	// Default style is "trail": stop + trailing, deliberately no target.
 	rows := []signals.Row{{
 		Action: "BUY", Symbol: "TCS", Plan: plan(100, 95, 110, 10, 1000),
 		Reasons: []string{"momentum rank #3"},
 	}}
-	ds := Decide(rows, settings(), snap(10_000))
-
-	d := find(t, ds, "TCS")
+	d := find(t, Decide(rows, settings(), snap(10_000)), "TCS")
 	if d.Action != "BUY" || d.Order == nil {
 		t.Fatalf("want BUY with order, got %+v", d)
 	}
-	if d.Order.StopLoss == nil || d.Order.Target == nil || d.Order.TrailBy == nil {
-		t.Fatal("bracket must carry stop, target and trail")
+	if d.Order.StopLoss == nil || d.Order.TrailBy == nil {
+		t.Fatal("trail style must carry stop and trail")
+	}
+	if d.Order.Target != nil {
+		t.Error("trail style must not cap the win with a target")
 	}
 	if !d.Order.TrailBy.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("trail should equal entry-stop distance, got %s", d.Order.TrailBy)
 	}
 }
 
-func TestTrailDisabled(t *testing.T) {
+func TestBracketStyleCapsAtTarget(t *testing.T) {
 	rows := []signals.Row{{Action: "BUY", Symbol: "TCS", Plan: plan(100, 95, 110, 10, 1000)}}
 	s := settings()
-	s.TrailStops = false
+	s.ExitStyle = "bracket"
 	d := find(t, Decide(rows, s, snap(10_000)), "TCS")
+	if d.Order.StopLoss == nil || d.Order.Target == nil || d.Order.TrailBy == nil {
+		t.Fatal("bracket style with trail_stops must carry stop, target and trail")
+	}
+
+	s.TrailStops = false
+	d = find(t, Decide(rows, s, snap(10_000)), "TCS")
 	if d.Order.TrailBy != nil {
-		t.Error("trail must be nil when disabled")
+		t.Error("bracket style with trail_stops off must not trail")
+	}
+	if d.Order.Target == nil {
+		t.Error("bracket style must keep the target")
 	}
 }
 
