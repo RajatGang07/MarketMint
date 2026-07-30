@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Blotter } from './components/Blotter'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { Forecast } from './components/Forecast'
+import { HowItWorks } from './components/HowItWorks'
 import { Ideas } from './components/Ideas'
 import { IntradayScanner } from './components/IntradayScanner'
 import { OrderTicket } from './components/OrderTicket'
@@ -11,12 +12,13 @@ import { QuoteHeader } from './components/QuoteHeader'
 import { SignalsBoard } from './components/SignalsBoard'
 import { StatCard } from './components/StatCard'
 import { SymbolSearch } from './components/SymbolSearch'
-import { Watchlist } from './components/Watchlist'
+import { Watchlist, type AutoEntry } from './components/Watchlist'
 import { AuthScreen } from './components/AuthScreen'
 import { Autopilot } from './components/Autopilot'
 import { api, AUTH_REQUIRED_EVENT, session, type ChartRange, type Quote } from './lib/api'
 import { inr, pct, signedInr } from './lib/format'
 import { ToastProvider, useToast } from './lib/toast'
+import { useTradeNotifications } from './lib/notifications'
 import { usePoll } from './lib/usePoll'
 
 const DEFAULT_SYMBOLS = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'SBIN', 'ICICIBANK']
@@ -28,7 +30,7 @@ const ACCOUNT_INTERVAL = 5_000
 const CHART_INTERVAL = 30_000
 const HEALTH_INTERVAL = 20_000
 
-type Tab = 'trade' | 'ideas' | 'forecast' | 'autopilot'
+type Tab = 'trade' | 'ideas' | 'forecast' | 'autopilot' | 'how'
 type IdeasTab = 'signals' | 'intraday' | 'positional'
 
 function loadWatchlist(): string[] {
@@ -99,7 +101,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
   const toast = useToast()
   const [tab, setTab] = useState<Tab>(() => {
     const saved = localStorage.getItem(TAB_KEY)
-    return saved === 'ideas' || saved === 'forecast' || saved === 'autopilot' ? saved : 'trade'
+    return saved === 'ideas' || saved === 'forecast' || saved === 'autopilot' || saved === 'how' ? saved : 'trade'
   })
   const [ideasTab, setIdeasTab] = useState<IdeasTab>('signals')
   const [symbols, setSymbols] = useState<string[]>(loadWatchlist)
@@ -115,8 +117,40 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
   const portfolio = usePoll(api.portfolio, ACCOUNT_INTERVAL)
   const orders = usePoll(api.orders, ACCOUNT_INTERVAL)
   const trades = usePoll(api.trades, ACCOUNT_INTERVAL)
+  // Feeds the watchlist's auto "top picks" section; the server caches the
+  // scan (and the autopilot keeps it warm), so this is one cheap read.
+  const signalsBoard = usePoll(api.signals, 10 * 60_000)
+  // Polled globally (not just on the Autopilot tab) so error notifications
+  // fire no matter where you are in the app.
+  const pilotLog = usePoll(useCallback(() => api.autopilotLog(20), []), 30_000)
+  const notify = useTradeNotifications(trades.data, pilotLog.data)
 
-  const quoteSymbols = useMemo(() => Array.from(new Set([selected, ...symbols])), [selected, symbols])
+  // The watchlist maintains itself: open positions pin on automatically, and
+  // today's top momentum picks appear beneath the manual list.
+  const autoEntries = useMemo<AutoEntry[]>(() => {
+    const manual = new Set(symbols)
+    const out: AutoEntry[] = []
+    const seen = new Set<string>()
+    for (const pos of portfolio.data?.positions ?? []) {
+      if (pos.quantity > 0 && !manual.has(pos.trading_symbol) && !seen.has(pos.trading_symbol)) {
+        out.push({ symbol: pos.trading_symbol, tag: 'held' })
+        seen.add(pos.trading_symbol)
+      }
+    }
+    for (const row of signalsBoard.data?.rows ?? []) {
+      if (out.filter((e) => e.tag === 'pick').length >= 5) break
+      if (row.action === 'BUY' && !manual.has(row.symbol) && !seen.has(row.symbol)) {
+        out.push({ symbol: row.symbol, tag: 'pick' })
+        seen.add(row.symbol)
+      }
+    }
+    return out
+  }, [symbols, portfolio.data, signalsBoard.data])
+
+  const quoteSymbols = useMemo(
+    () => Array.from(new Set([selected, ...symbols, ...autoEntries.map((e) => e.symbol)])),
+    [selected, symbols, autoEntries],
+  )
   const quotes = usePoll(
     useCallback(() => api.quotes(quoteSymbols), [quoteSymbols]),
     QUOTE_INTERVAL,
@@ -265,6 +299,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
             {tabBtn('ideas', 'Ideas & Signals')}
             {tabBtn('forecast', 'Forecast')}
             {tabBtn('autopilot', 'Autopilot')}
+            {tabBtn('how', 'How it works')}
           </nav>
 
           <div className="flex items-center gap-2 text-xs">
@@ -293,6 +328,27 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
                   {signedInr(p.total_pnl)} ({pct(p.total_pnl_pct)})
                 </div>
               </div>
+            ) : null}
+            {notify.supported ? (
+              <button
+                type="button"
+                onClick={notify.toggle}
+                title={
+                  notify.denied
+                    ? 'Notifications are blocked in your browser settings for this site'
+                    : notify.enabled
+                      ? 'Notifications on: fills and autopilot errors (while the browser is open)'
+                      : 'Enable browser notifications for fills and autopilot errors'
+                }
+                aria-pressed={notify.enabled}
+                className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  notify.enabled
+                    ? 'border-emerald-700/60 bg-emerald-500/10 text-emerald-400'
+                    : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                {notify.enabled ? '🔔' : '🔕'}
+              </button>
             ) : null}
             <button
               type="button"
@@ -358,6 +414,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
                 </p>
                 <Watchlist
                   symbols={symbols}
+                  auto={autoEntries}
                   quotes={quoteBySymbol}
                   selected={selected}
                   onSelect={setSelected}
@@ -404,6 +461,8 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
           <Forecast initialSymbol={selected} />
         ) : tab === 'autopilot' ? (
           <Autopilot active={tab === 'autopilot'} onTraded={refreshAccount} />
+        ) : tab === 'how' ? (
+          <HowItWorks />
         ) : (
           <>
             <nav className="flex flex-wrap gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">

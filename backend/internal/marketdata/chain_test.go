@@ -200,3 +200,38 @@ func TestMockCandlesAreDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestLTPLiveNeverPricesOffTheSimulator(t *testing.T) {
+	dead := &stub{name: "yahoo", err: errors.New("rate limited")}
+	sim := &stub{name: SimulatorName, price: "3428.75"} // the fantasy price
+	chain := NewChain(quietLogger(), dead, sim)
+	chain.coolOff = 0 // re-probe immediately so recovery is visible in-test
+
+	// Ordinary LTP keeps the platform usable via the simulator...
+	if _, err := chain.LTP(context.Background(), "NSE", "CASH", "NAUKRI"); err != nil {
+		t.Fatalf("LTP should fall through to the simulator: %v", err)
+	}
+	// ...but the fill path must refuse and let orders rest instead.
+	if _, err := chain.LTPLive(context.Background(), "NSE", "CASH", "NAUKRI"); err == nil {
+		t.Fatal("LTPLive must not fall through to simulated prices")
+	}
+
+	dead.err = nil
+	dead.price = "1247.85"
+	got, err := chain.LTPLive(context.Background(), "NSE", "CASH", "NAUKRI")
+	if err != nil {
+		t.Fatalf("live provider recovered, want price: %v", err)
+	}
+	if got.String() != "1247.85" {
+		t.Fatalf("want the live price, got %s", got)
+	}
+}
+
+func TestLTPLiveSimulatorOnlySetupStillWorks(t *testing.T) {
+	sim := &stub{name: SimulatorName, price: "100"}
+	chain := NewChain(quietLogger(), sim)
+	got, err := chain.LTPLive(context.Background(), "NSE", "CASH", "X")
+	if err != nil || got.String() != "100" {
+		t.Fatalf("simulator-only chain is the price authority, got %s err=%v", got, err)
+	}
+}

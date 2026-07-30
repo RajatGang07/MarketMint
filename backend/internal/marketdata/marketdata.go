@@ -198,10 +198,15 @@ func (c *Chain) markOK(name string) {
 
 // run walks the chain until one provider answers.
 func run[T any](c *Chain, call func(Provider) (T, error)) (T, error) {
+	return runOver(c, c.providers, call)
+}
+
+// runOver is run restricted to a subset of the chain.
+func runOver[T any](c *Chain, providers []Provider, call func(Provider) (T, error)) (T, error) {
 	var zero T
 	var lastErr error
 
-	for _, p := range c.providers {
+	for _, p := range providers {
 		if !c.shouldTry(p.Name()) {
 			continue
 		}
@@ -225,6 +230,32 @@ func run[T any](c *Chain, call func(Provider) (T, error)) (T, error) {
 }
 
 func (c *Chain) Name() string { return "chain" }
+
+// SimulatorName is the mock provider's name; the chain treats it specially in
+// LTPLive because it is a safety net, not a price authority.
+const SimulatorName = "simulator"
+
+// LTPLive prices an instrument for AUTOMATED fills, and never falls through
+// to the simulator while a real provider is configured: filling resting stops
+// or limits at simulated prices books fantasy P&L into a ledger the user is
+// trying to learn from (a transient Yahoo failure once "sold" three holdings
+// at ~2.7x their real price). Callers treat an error as "skip this symbol
+// until the feed recovers". A simulator-only setup keeps working — its prices
+// are self-consistent when every fill uses them.
+func (c *Chain) LTPLive(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error) {
+	live := make([]Provider, 0, len(c.providers))
+	for _, p := range c.providers {
+		if p.Name() != SimulatorName {
+			live = append(live, p)
+		}
+	}
+	if len(live) == 0 {
+		live = c.providers // simulator-only: it is the price authority
+	}
+	return runOver(c, live, func(p Provider) (decimal.Decimal, error) {
+		return p.LTP(ctx, exchange, segment, symbol)
+	})
+}
 
 func (c *Chain) LTP(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error) {
 	return run(c, func(p Provider) (decimal.Decimal, error) {

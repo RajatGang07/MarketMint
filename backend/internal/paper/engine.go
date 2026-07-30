@@ -476,15 +476,25 @@ func (e *Engine) MatchOpenOrders(ctx context.Context, accountID int64) (int, err
 		return 0, err
 	}
 
+	// Automated fills must never price against the simulator fallback — a
+	// resting stop "filled" at a fantasy price corrupts the whole ledger. An
+	// unpriceable symbol simply stays resting until the feed recovers.
+	livePrice := e.market.LTP
+	if lp, ok := e.market.(interface {
+		LTPLive(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error)
+	}); ok {
+		livePrice = lp.LTPLive
+	}
+
 	prices := make(map[string]decimal.Decimal, len(open))
 	for _, o := range open {
 		key := o.Exchange + "|" + o.Segment + "|" + o.TradingSymbol
 		if _, ok := prices[key]; ok {
 			continue
 		}
-		p, err := e.market.LTP(ctx, o.Exchange, o.Segment, o.TradingSymbol)
+		p, err := livePrice(ctx, o.Exchange, o.Segment, o.TradingSymbol)
 		if err != nil {
-			e.log.Warn("matcher: price lookup failed", "symbol", o.TradingSymbol, "err", err)
+			e.log.Warn("matcher: no live price; leaving orders resting", "symbol", o.TradingSymbol, "err", err)
 			continue
 		}
 		prices[key] = p
