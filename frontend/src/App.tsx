@@ -13,6 +13,7 @@ import { StatCard } from './components/StatCard'
 import { SymbolSearch } from './components/SymbolSearch'
 import { Watchlist } from './components/Watchlist'
 import { AuthScreen } from './components/AuthScreen'
+import { Autopilot } from './components/Autopilot'
 import { api, AUTH_REQUIRED_EVENT, session, type ChartRange, type Quote } from './lib/api'
 import { inr, pct, signedInr } from './lib/format'
 import { ToastProvider, useToast } from './lib/toast'
@@ -27,7 +28,7 @@ const ACCOUNT_INTERVAL = 5_000
 const CHART_INTERVAL = 30_000
 const HEALTH_INTERVAL = 20_000
 
-type Tab = 'trade' | 'ideas' | 'forecast'
+type Tab = 'trade' | 'ideas' | 'forecast' | 'autopilot'
 type IdeasTab = 'signals' | 'intraday' | 'positional'
 
 function loadWatchlist(): string[] {
@@ -98,7 +99,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
   const toast = useToast()
   const [tab, setTab] = useState<Tab>(() => {
     const saved = localStorage.getItem(TAB_KEY)
-    return saved === 'ideas' || saved === 'forecast' ? saved : 'trade'
+    return saved === 'ideas' || saved === 'forecast' || saved === 'autopilot' ? saved : 'trade'
   })
   const [ideasTab, setIdeasTab] = useState<IdeasTab>('signals')
   const [symbols, setSymbols] = useState<string[]>(loadWatchlist)
@@ -263,6 +264,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
             {tabBtn('trade', 'Trade')}
             {tabBtn('ideas', 'Ideas & Signals')}
             {tabBtn('forecast', 'Forecast')}
+            {tabBtn('autopilot', 'Autopilot')}
           </nav>
 
           <div className="flex items-center gap-2 text-xs">
@@ -400,6 +402,8 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
           </>
         ) : tab === 'forecast' ? (
           <Forecast initialSymbol={selected} />
+        ) : tab === 'autopilot' ? (
+          <Autopilot active={tab === 'autopilot'} onTraded={refreshAccount} />
         ) : (
           <>
             <nav className="flex flex-wrap gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1">

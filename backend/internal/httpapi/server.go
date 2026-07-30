@@ -20,6 +20,7 @@ import (
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/autopilot"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/forecast"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/instruments"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/intraday"
@@ -42,6 +43,7 @@ type Server struct {
 	intraday  *intraday.Scanner
 	signals   *signals.Composer
 	forecast  *forecast.Engine
+	autopilot *autopilot.Runner
 	auth      *auth.Service
 	log       *slog.Logger
 }
@@ -66,6 +68,7 @@ func NewServer(
 	intradayScanner *intraday.Scanner,
 	signalsBoard *signals.Composer,
 	forecastEngine *forecast.Engine,
+	autopilotRunner *autopilot.Runner,
 	authService *auth.Service,
 	log *slog.Logger,
 ) *Server {
@@ -78,6 +81,7 @@ func NewServer(
 		intraday:  intradayScanner,
 		signals:   signalsBoard,
 		forecast:  forecastEngine,
+		autopilot: autopilotRunner,
 		auth:      authService,
 		log:       log,
 	}
@@ -142,6 +146,13 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 	r.With(slow, s.requireAuth).Get("/analytics/intraday", s.handleIntraday)
 	r.With(slow, s.requireAuth).Get("/analytics/signals", s.handleSignals)
 	r.With(slow, s.requireAuth).Get("/analytics/forecast", s.handleForecast)
+
+	r.Route("/autopilot", func(r chi.Router) {
+		r.Use(quick, s.requireAuth)
+		r.Get("/", s.handleAutopilotGet)
+		r.Post("/", s.handleAutopilotSave)
+		r.Get("/log", s.handleAutopilotLog)
+	})
 
 	r.Route("/orders", func(r chi.Router) {
 		r.Use(quick, s.requireAuth)
@@ -502,6 +513,85 @@ func (s *Server) handleForecast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// ---------------------------------------------------------------------------
+// Autopilot
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleAutopilotGet(w http.ResponseWriter, r *http.Request) {
+	account := accountFrom(r)
+	settings, err := s.store.AutopilotSettingsFor(r.Context(), account.ID)
+	if err != nil {
+		s.log.Error("autopilot settings read failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleAutopilotSave(w http.ResponseWriter, r *http.Request) {
+	account := accountFrom(r)
+
+	var body struct {
+		Enabled            bool            `json:"enabled"`
+		MaxPositions       int             `json:"max_positions"`
+		MaxCapitalPerTrade decimal.Decimal `json:"max_capital_per_trade"`
+		TrailStops         bool            `json:"trail_stops"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.MaxPositions < 1 || body.MaxPositions > 20 {
+		writeErr(w, http.StatusBadRequest, "max_positions must be between 1 and 20")
+		return
+	}
+	if body.MaxCapitalPerTrade.LessThanOrEqual(decimal.Zero) {
+		writeErr(w, http.StatusBadRequest, "max_capital_per_trade must be positive")
+		return
+	}
+
+	settings := store.AutopilotSettings{
+		AccountID:          account.ID,
+		Enabled:            body.Enabled,
+		MaxPositions:       body.MaxPositions,
+		MaxCapitalPerTrade: body.MaxCapitalPerTrade,
+		TrailStops:         body.TrailStops,
+	}
+	if err := s.store.SaveAutopilotSettings(r.Context(), settings); err != nil {
+		s.log.Error("autopilot settings save failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Switching on should act now, not one ticker interval from now. The pass
+	// runs detached: it can outlive this request, and its own audit log is
+	// how the user sees the result.
+	if body.Enabled {
+		go s.autopilot.Pass(context.WithoutCancel(r.Context()))
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleAutopilotLog(w http.ResponseWriter, r *http.Request) {
+	account := accountFrom(r)
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	entries, err := s.store.ListAutopilotLog(r.Context(), account.ID, limit)
+	if err != nil {
+		s.log.Error("autopilot log read failed", "err", err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if entries == nil {
+		entries = []store.AutopilotLogEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // ---------------------------------------------------------------------------

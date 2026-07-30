@@ -50,6 +50,10 @@ type Config struct {
 
 	// How often the background matcher tries to fill resting LIMIT orders.
 	MatchInterval time.Duration
+
+	// How often the autopilot re-evaluates the signals board and trades the
+	// accounts that switched it on.
+	AutopilotInterval time.Duration
 }
 
 func Load() (Config, error) {
@@ -64,6 +68,11 @@ func Load() (Config, error) {
 	interval, err := time.ParseDuration(env("MATCH_INTERVAL", "5s"))
 	if err != nil {
 		return Config{}, fmt.Errorf("MATCH_INTERVAL: %w", err)
+	}
+
+	pilotInterval, err := time.ParseDuration(env("AUTOPILOT_INTERVAL", "10m"))
+	if err != nil {
+		return Config{}, fmt.Errorf("AUTOPILOT_INTERVAL: %w", err)
 	}
 
 	cfg := Config{
@@ -82,6 +91,7 @@ func Load() (Config, error) {
 		StartingCash:        cash,
 		DefaultAccountName:  env("DEFAULT_ACCOUNT_NAME", "default"),
 		MatchInterval:       interval,
+		AutopilotInterval:   pilotInterval,
 	}
 
 	if len(cfg.MarketDataProviders) == 0 {

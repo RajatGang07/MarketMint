@@ -15,6 +15,7 @@ import (
 
 	"github.com/gangrajat/groww-paper-trading/backend/internal/analytics"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/auth"
+	"github.com/gangrajat/groww-paper-trading/backend/internal/autopilot"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/config"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/forecast"
 	"github.com/gangrajat/groww-paper-trading/backend/internal/groww"
@@ -82,15 +83,19 @@ func run(log *slog.Logger) error {
 	}
 	newsFetcher := news.New(cfg.AnthropicAPIKey, cfg.AnthropicModel, log)
 	forecaster := forecast.New(market, universe, newsFetcher, log)
+	pilot := autopilot.New(engine, board, st, log)
 	authSvc := auth.New(st)
 
 	// Resting LIMIT orders are matched in the background for every account,
 	// so exits fire even while nobody has the dashboard open.
 	go engine.RunMatcher(ctx, cfg.MatchInterval)
+	// The autopilot trades enabled accounts on its own cadence; each pass
+	// re-reads settings, so toggling in the UI needs no restart.
+	go pilot.Run(ctx, cfg.AutopilotInterval)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, forecaster, authSvc, log).Routes(cfg.CORSOrigins),
+		Handler:           httpapi.NewServer(engine, st, market, universe, scanner, orb, board, forecaster, pilot, authSvc, log).Routes(cfg.CORSOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

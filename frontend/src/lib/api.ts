@@ -361,6 +361,23 @@ export interface Forecast {
   caveats: string[]
 }
 
+export interface AutopilotSettings {
+  enabled: boolean
+  max_positions: number
+  max_capital_per_trade: number
+  trail_stops: boolean
+  updated_at?: string
+}
+
+export interface AutopilotLogEntry {
+  id: number
+  at: string
+  action: 'BUY' | 'SELL' | 'SKIP' | 'ERROR'
+  symbol?: string
+  detail: string
+  order_ref?: string
+}
+
 export type ChartRange = '1d' | '5d' | '1mo' | '3mo' | '1y'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -426,6 +443,15 @@ export const api = {
   signals: () => req<SignalsBoard>('/analytics/signals'),
   forecast: (symbol: string) =>
     req<Forecast>(`/analytics/forecast?symbol=${encodeURIComponent(symbol)}`),
+
+  autopilot: () => req<AutopilotSettings>('/autopilot'),
+  saveAutopilot: (settings: AutopilotSettings) =>
+    req<AutopilotSettings>('/autopilot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }),
+  autopilotLog: (limit = 100) => req<AutopilotLogEntry[]>(`/autopilot/log?limit=${limit}`),
 
   placeOrder: (body: OrderRequest) =>
     req<Order>('/orders', {
