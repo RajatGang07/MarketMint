@@ -139,6 +139,22 @@ export function HowItWorks() {
         </Point>
       </Section>
 
+      <Section title="Charges calculator" tag="costs">
+        <Point k="What it shows">
+          the full cost bifurcation of a real trade — brokerage, STT, exchange transaction charges, SEBI fee, stamp
+          duty, GST, DP charge, and for MTF the daily interest on the broker-funded portion — plus the break-even
+          sell price and net P&amp;L after all of it.
+        </Point>
+        <Point k="Why it exists">
+          the paper engine fills at clean prices, which quietly flatters every strategy. Charges are the gap between
+          paper and reality: a delivery round trip costs roughly 0.25–0.3% of turnover, which is most of a thin edge.
+        </Point>
+        <Point k="Honest limit">
+          rates follow Groww&apos;s published schedule as of mid-2025 and are listed beside every line; brokers and
+          regulators revise them, so verify before relying on the totals.
+        </Point>
+      </Section>
+
       <Section title="Watchlist & notifications" tag="workflow">
         <Point k="Auto watchlist">
           your open positions pin themselves to the watchlist automatically (marked <em>held</em>), and today&apos;s top

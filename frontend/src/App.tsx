@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Blotter } from './components/Blotter'
+import { Charges } from './components/Charges'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { Forecast } from './components/Forecast'
 import { HowItWorks } from './components/HowItWorks'
@@ -30,7 +31,7 @@ const ACCOUNT_INTERVAL = 5_000
 const CHART_INTERVAL = 30_000
 const HEALTH_INTERVAL = 20_000
 
-type Tab = 'trade' | 'ideas' | 'forecast' | 'autopilot' | 'how'
+type Tab = 'trade' | 'ideas' | 'forecast' | 'autopilot' | 'charges' | 'how'
 type IdeasTab = 'signals' | 'intraday' | 'positional'
 
 function loadWatchlist(): string[] {
@@ -101,7 +102,9 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
   const toast = useToast()
   const [tab, setTab] = useState<Tab>(() => {
     const saved = localStorage.getItem(TAB_KEY)
-    return saved === 'ideas' || saved === 'forecast' || saved === 'autopilot' || saved === 'how' ? saved : 'trade'
+    return saved === 'ideas' || saved === 'forecast' || saved === 'autopilot' || saved === 'charges' || saved === 'how'
+      ? saved
+      : 'trade'
   })
   const [ideasTab, setIdeasTab] = useState<IdeasTab>('signals')
   const [symbols, setSymbols] = useState<string[]>(loadWatchlist)
@@ -299,6 +302,7 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
             {tabBtn('ideas', 'Ideas & Signals')}
             {tabBtn('forecast', 'Forecast')}
             {tabBtn('autopilot', 'Autopilot')}
+            {tabBtn('charges', 'Charges')}
             {tabBtn('how', 'How it works')}
           </nav>
 
@@ -461,6 +465,8 @@ function Dashboard({ username, onSignedOut }: { username: string; onSignedOut: (
           <Forecast initialSymbol={selected} />
         ) : tab === 'autopilot' ? (
           <Autopilot active={tab === 'autopilot'} onTraded={refreshAccount} />
+        ) : tab === 'charges' ? (
+          <Charges />
         ) : tab === 'how' ? (
           <HowItWorks />
         ) : (
