@@ -54,6 +54,10 @@ type Config struct {
 	// How often the autopilot re-evaluates the signals board and trades the
 	// accounts that switched it on.
 	AutopilotInterval time.Duration
+
+	// NSEHolidays lists movable exchange holidays (YYYY-MM-DD, comma
+	// separated). Weekends and fixed national holidays are built in.
+	NSEHolidays []string
 }
 
 func Load() (Config, error) {
@@ -92,6 +96,7 @@ func Load() (Config, error) {
 		DefaultAccountName:  env("DEFAULT_ACCOUNT_NAME", "default"),
 		MatchInterval:       interval,
 		AutopilotInterval:   pilotInterval,
+		NSEHolidays:         splitCSV(os.Getenv("NSE_HOLIDAYS")),
 	}
 
 	if len(cfg.MarketDataProviders) == 0 {

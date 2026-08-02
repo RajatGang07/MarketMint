@@ -90,24 +90,18 @@ type Engine struct {
 	universe *instruments.Store
 	news     *news.Fetcher
 	store    *store.Store
+	cal      calendar
 	log      *slog.Logger
 }
 
-func New(market marketdata.Provider, universe *instruments.Store, newsFetcher *news.Fetcher, st *store.Store, log *slog.Logger) *Engine {
-	return &Engine{market: market, universe: universe, news: newsFetcher, store: st, log: log}
+// extraHolidays lists movable NSE holidays (YYYY-MM-DD, from NSE_HOLIDAYS);
+// weekends and fixed national holidays are always known.
+func New(market marketdata.Provider, universe *instruments.Store, newsFetcher *news.Fetcher, st *store.Store, extraHolidays []string, log *slog.Logger) *Engine {
+	return &Engine{market: market, universe: universe, news: newsFetcher, store: st, cal: newCalendar(extraHolidays), log: log}
 }
 
 // istZone matches the exchange clock (same convention as package intraday).
 var istZone = time.FixedZone("IST", 5*3600+1800)
-
-func sessionOpen(now time.Time) bool {
-	t := now.In(istZone)
-	if wd := t.Weekday(); wd == time.Saturday || wd == time.Sunday {
-		return false
-	}
-	mins := t.Hour()*60 + t.Minute()
-	return mins >= 9*60+15 && mins < 15*60+30
-}
 
 // Run builds the forecast for one symbol.
 func (e *Engine) Run(ctx context.Context, exchange, symbol string) (Result, error) {
@@ -144,7 +138,33 @@ func (e *Engine) Run(ctx context.Context, exchange, symbol string) (Result, erro
 	nw := e.news.ForSymbol(ctx, symbol, name)
 	regime := e.marketRegime(ctx, now)
 
-	open := sessionOpen(now)
+	open := e.cal.sessionOpen(now)
+	// Unlisted holiday heuristic: the clock says the session is on, but no
+	// bar has printed today well past the open — the exchange is shut.
+	if open && staleTape(intra, now) {
+		open = false
+	}
+
+	sessDay, _ := e.cal.upcomingSession(now)
+	nextTrading := e.cal.nextTradingDay(now)
+
+	var leans []Lean
+	if open {
+		leans = []Lean{
+			secondsLean(),
+			intradayLean(flow, nw, true),
+			closeLean(tech, flow, nw, regime, true),
+			nextDayLean(tech, nw, regime, fmt.Sprintf("Next session (%s)", sessionLabel(nextTrading)), false),
+		}
+	} else {
+		// A closed market has exactly one honest horizon: the next session.
+		// Pretending to forecast "the next 15 minutes" of a market that is
+		// not trading would be theatre.
+		leans = []Lean{
+			nextDayLean(tech, nw, regime, fmt.Sprintf("Next session (%s)", sessionLabel(sessDay)), true),
+		}
+	}
+
 	res := Result{
 		Symbol:      symbol,
 		Name:        name,
@@ -153,13 +173,11 @@ func (e *Engine) Run(ctx context.Context, exchange, symbol string) (Result, erro
 		ChangePct:   changePct,
 		SessionOpen: open,
 		News:        nw,
-		Leans: []Lean{
-			secondsLean(),
-			intradayLean(flow, nw, open),
-			closeLean(tech, flow, nw, regime, open),
-			nextDayLean(tech, nw, regime),
-		},
-		Caveats: caveats(tech, flow, open),
+		Leans:       leans,
+		Caveats:     caveats(tech, flow, open),
+	}
+	if !open {
+		res.Caveats = append([]string{e.cal.describeNextOpen(now)}, res.Caveats...)
 	}
 	if chain, ok := e.market.(*marketdata.Chain); ok {
 		res.PriceSource = chain.Active()
@@ -462,8 +480,8 @@ func closeLean(t techView, f flowView, nw news.Result, rg regimeView, open bool)
 	return l
 }
 
-func nextDayLean(t techView, nw news.Result, rg regimeView) Lean {
-	l := Lean{Horizon: HorizonNextDay, Label: "Next session / short swing"}
+func nextDayLean(t techView, nw news.Result, rg regimeView, label string, closed bool) Lean {
+	l := Lean{Horizon: HorizonNextDay, Label: label}
 	if !t.ok {
 		l.Direction, l.ProbabilityUp, l.Confidence = "flat", 50, "none"
 		l.Note = "Needs about three months of daily history; not enough bars available."
@@ -491,7 +509,32 @@ func nextDayLean(t techView, nw news.Result, rg regimeView) Lean {
 		l.Confidence = "low"
 		l.Note = fmt.Sprintf("High volatility regime (ATR %.1f%% of price) — daily range can swamp any directional edge.", t.atrPct*100)
 	}
+	if closed {
+		note := "Anything that happens before the open (results, global markets, news) lands as a gap this lean cannot see."
+		if l.Note != "" {
+			l.Note += " " + note
+		} else {
+			l.Note = note
+		}
+	}
 	return l
+}
+
+// staleTape reports that no 5-minute bar has printed for today's session even
+// though the clock is comfortably past the open (data lag grace: 30 min) —
+// the signature of an exchange holiday missing from the configured list.
+func staleTape(intra []bar, now time.Time) bool {
+	ist := now.In(istZone)
+	if ist.Hour()*60+ist.Minute() < 9*60+45 {
+		return false
+	}
+	today := ist.Format("2006-01-02")
+	for i := len(intra) - 1; i >= 0; i-- {
+		if intra[i].Time.In(istZone).Format("2006-01-02") == today {
+			return false
+		}
+	}
+	return true
 }
 
 func newsDriver(nw news.Result, weight float64) Driver {

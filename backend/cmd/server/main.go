@@ -82,7 +82,7 @@ func run(log *slog.Logger) error {
 		log.Info("forecast news: no ANTHROPIC_API_KEY; using keyword-lexicon sentiment")
 	}
 	newsFetcher := news.New(cfg.AnthropicAPIKey, cfg.AnthropicModel, log)
-	forecaster := forecast.New(market, universe, newsFetcher, st, log)
+	forecaster := forecast.New(market, universe, newsFetcher, st, cfg.NSEHolidays, log)
 	pilot := autopilot.New(engine, board, st, market, log)
 	authSvc := auth.New(st)
 

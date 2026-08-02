@@ -15,15 +15,15 @@ import (
 // shows the real hit rate per horizon — including when it embarrasses us.
 
 // maturity computes when a horizon's clock runs out, on the IST session
-// calendar. ok=false means the horizon has no meaningful expiry right now
-// (e.g. intraday leans while the market is closed).
-func maturity(h Horizon, now time.Time) (time.Time, bool) {
+// calendar (weekends AND holidays skipped). ok=false means the horizon has no
+// meaningful expiry right now (e.g. intraday leans while the market is closed).
+func maturity(h Horizon, now time.Time, cal calendar) (time.Time, bool) {
 	ist := now.In(istZone)
 	closeToday := time.Date(ist.Year(), ist.Month(), ist.Day(), 15, 30, 0, 0, istZone)
 
 	switch h {
 	case HorizonIntra:
-		if !sessionOpen(now) {
+		if !cal.sessionOpen(now) {
 			return time.Time{}, false
 		}
 		m := ist.Add(15 * time.Minute)
@@ -32,21 +32,22 @@ func maturity(h Horizon, now time.Time) (time.Time, bool) {
 		}
 		return m, true
 	case HorizonClose:
-		if !sessionOpen(now) {
+		if !cal.sessionOpen(now) {
 			return time.Time{}, false
 		}
 		return closeToday, true
 	case HorizonNextDay:
-		// Next trading day's close. Weekends are skipped; exchange holidays
-		// are not modelled — those few records resolve one session late,
-		// which prices in the same close and does not bias the score.
-		d := closeToday
-		for {
-			d = d.AddDate(0, 0, 1)
-			if wd := d.Weekday(); wd != time.Saturday && wd != time.Sunday {
-				return d, true
-			}
+		// The lean targets the upcoming session's close: today's close while
+		// the session is still trading would be the "close" horizon, so an
+		// open market points at the NEXT trading day; a closed one points at
+		// whichever session comes next (Monday after a Friday-evening check,
+		// the day after a holiday, and so on).
+		if cal.sessionOpen(now) {
+			d := cal.nextTradingDay(now)
+			return d.Add(15*time.Hour + 30*time.Minute), true
 		}
+		_, close := cal.upcomingSession(now)
+		return close, true
 	default:
 		return time.Time{}, false // seconds: labelled unpredictable, never scored
 	}
@@ -62,7 +63,7 @@ func (e *Engine) record(ctx context.Context, res Result) {
 		if lean.Direction == "flat" || lean.Horizon == HorizonSeconds {
 			continue // no directional call to hold accountable
 		}
-		matures, ok := maturity(lean.Horizon, res.AsOf)
+		matures, ok := maturity(lean.Horizon, res.AsOf, e.cal)
 		if !ok {
 			continue
 		}
