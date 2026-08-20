@@ -54,6 +54,44 @@ test.describe('History tab', () => {
       .toBeGreaterThan(5000)
   })
 
+  test('a reversed date range gets a clear error', async ({ page }) => {
+    await page.getByRole('button', { name: 'Custom' }).click()
+    await page.locator('input[type="date"]').first().fill('2026-06-30')
+    await page.locator('input[type="date"]').nth(1).fill('2026-06-01')
+    await page.getByRole('button', { name: 'Apply' }).click()
+    await expect(page.getByText(/from must be on or before to/)).toBeVisible()
+  })
+
+  test('a window over five years is refused', async ({ page }) => {
+    await page.getByRole('button', { name: 'Custom' }).click()
+    await page.locator('input[type="date"]').first().fill('2019-01-01')
+    await page.getByRole('button', { name: 'Apply' }).click()
+    await expect(page.getByText(/window too large/)).toBeVisible()
+  })
+
+  test('a weekend-only window shows the empty state, not an error', async ({ page }) => {
+    await page.getByRole('button', { name: 'Custom' }).click()
+    await page.locator('input[type="date"]').first().fill('2026-08-08') // Saturday
+    await page.locator('input[type="date"]').nth(1).fill('2026-08-09') // Sunday
+    await page.getByRole('button', { name: 'Apply' }).click()
+    await expect(page.getByText(/No trading sessions in this window/)).toBeVisible({
+      timeout: 60_000,
+    })
+  })
+
+  test('an unknown symbol errors honestly without poisoning the feed', async ({ page }) => {
+    await page.getByLabel('Search instruments').fill('ZZZZZZ')
+    await page.getByLabel('Search instruments').press('Enter')
+    await expect(page.getByText(/candle lookup failed/)).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible()
+
+    // The bad symbol must not have tripped the provider-wide cool-down:
+    // a real share still loads immediately afterwards.
+    await page.getByLabel('Search instruments').fill('RELIANCE')
+    await page.getByLabel('Search instruments').press('Enter')
+    await expect(page.locator('tbody tr').first()).toBeVisible({ timeout: 30_000 })
+  })
+
   test('exports the visible rows as CSV', async ({ page }) => {
     await expect(page.locator('tbody tr').first()).toBeVisible()
     const [download] = await Promise.all([

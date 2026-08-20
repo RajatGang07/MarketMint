@@ -68,6 +68,53 @@ test.describe('Trade tab', () => {
     await expect(page.locator('tbody tr')).toHaveCount(2)
   })
 
+  test('the ticket blocks a buy beyond available cash', async ({ page }) => {
+    await waitForLiveTicket(page, 'RELIANCE')
+    await page.getByLabel('Quantity').fill('1000000')
+    await expect(page.getByText(/Needs ₹/)).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Buy 1000000 / })).toBeDisabled()
+  })
+
+  test('the ticket blocks shorting', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sell', exact: true }).click()
+    await expect(page.getByText(/shorting isn't supported/)).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Sell 1 / })).toBeDisabled()
+  })
+
+  test('the ticket blocks a limit order without a price', async ({ page }) => {
+    await page.getByLabel('Order type').selectOption('LIMIT')
+    await expect(page.getByText('Enter a limit price')).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Buy 1 / })).toBeDisabled()
+  })
+
+  test('removing the selected symbol moves the selection on', async ({ page }) => {
+    const row = page.locator('li').filter({ hasText: 'TCS' })
+    await row.getByRole('button').first().click()
+    await expect(page.getByRole('heading', { name: 'TCS' })).toBeVisible()
+
+    await row.hover()
+    await page.getByLabel('Remove TCS from watchlist').click()
+    await expect(page.getByRole('heading', { name: 'RELIANCE' })).toBeVisible()
+  })
+
+  test('adding a share twice does not duplicate it', async ({ page }) => {
+    for (let i = 0; i < 2; i++) {
+      await page.getByLabel('Search instruments').fill('KOTAKBANK')
+      await page.getByLabel('Search instruments').press('Enter')
+      await expect(page.getByRole('heading', { name: 'KOTAKBANK' })).toBeVisible()
+    }
+    await expect(page.locator('li').filter({ hasText: 'KOTAKBANK' })).toHaveCount(1)
+  })
+
+  test('reset can re-base the account to a new equity', async ({ page }) => {
+    await page.getByRole('button', { name: 'Reset', exact: true }).click()
+    await page.getByLabel(/New starting equity/).fill('2500000')
+    await page.getByRole('button', { name: 'Reset with new equity' }).click()
+
+    await expect(page.getByText(/Account re-based/)).toBeVisible() // toast
+    await expect(page.getByText('Started at ₹25,00,000.00')).toBeVisible()
+  })
+
   test('reset wipes the account back to its starting equity', async ({ page }) => {
     await waitForLiveTicket(page, 'RELIANCE')
     await page.getByRole('button', { name: /^Buy 1 RELIANCE/ }).click()

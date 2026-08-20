@@ -3,6 +3,7 @@ package marketdata
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -126,6 +127,35 @@ func TestChainReportsStatusPerProvider(t *testing.T) {
 	}
 	if !status[1].Healthy || !status[1].Active {
 		t.Fatalf("backup should be healthy and active, got %+v", status[1])
+	}
+}
+
+// A symbol-level miss (delisted ticker, typo) must not trip the provider-wide
+// cool-down: one dead symbol in a watchlist would otherwise poison every
+// other quote on the dashboard for two minutes.
+func TestNotFoundDoesNotPoisonTheProvider(t *testing.T) {
+	flaky := &stub{name: "yahoo", err: fmt.Errorf("yahoo: ZOMBIE.NS: %w", ErrNotFound)}
+	chain := NewChain(quietLogger(), flaky)
+	ctx := context.Background()
+
+	if _, err := chain.Quote(ctx, "NSE", "CASH", "ZOMBIE"); err == nil {
+		t.Fatal("expected the unknown symbol to error")
+	}
+	for _, status := range chain.Status() {
+		if !status.Healthy {
+			t.Fatalf("ErrNotFound must not mark %s unhealthy", status.Name)
+		}
+	}
+
+	// The very next call for a real symbol works — no cool-down was set.
+	flaky.err = nil
+	flaky.price = "1390.55"
+	got, err := chain.Quote(ctx, "NSE", "CASH", "RELIANCE")
+	if err != nil {
+		t.Fatalf("healthy provider must serve immediately after a not-found: %v", err)
+	}
+	if got.LastPrice.String() != "1390.55" {
+		t.Fatalf("want the live price, got %s", got.LastPrice)
 	}
 }
 

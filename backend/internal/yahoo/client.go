@@ -151,6 +151,10 @@ func (c *Client) request(ctx context.Context, symbol string, params url.Values) 
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		// Unknown or delisted ticker: a symbol-level miss, not a Yahoo outage.
+		return chartResult{}, fmt.Errorf("yahoo: %s: %w", symbol, marketdata.ErrNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return chartResult{}, fmt.Errorf("yahoo: %s returned %d: %s", symbol, resp.StatusCode, truncate(raw, 200))
 	}
@@ -160,10 +164,13 @@ func (c *Client) request(ctx context.Context, symbol string, params url.Values) 
 		return chartResult{}, fmt.Errorf("yahoo: decode %s: %w", symbol, err)
 	}
 	if body.Chart.Error != nil {
+		if body.Chart.Error.Code == "Not Found" {
+			return chartResult{}, fmt.Errorf("yahoo: %s: %s: %w", symbol, body.Chart.Error.Description, marketdata.ErrNotFound)
+		}
 		return chartResult{}, fmt.Errorf("yahoo: %s: %s", symbol, body.Chart.Error.Description)
 	}
 	if len(body.Chart.Result) == 0 {
-		return chartResult{}, fmt.Errorf("yahoo: no data for %s", symbol)
+		return chartResult{}, fmt.Errorf("yahoo: no data for %s: %w", symbol, marketdata.ErrNotFound)
 	}
 
 	result := body.Chart.Result[0]
@@ -202,7 +209,7 @@ func (c *Client) Quote(ctx context.Context, exchange, _, symbol string) (marketd
 		return marketdata.Quote{}, err
 	}
 	if res.Meta.RegularMarketPrice == 0 {
-		return marketdata.Quote{}, fmt.Errorf("yahoo: no price for %s", symbol)
+		return marketdata.Quote{}, fmt.Errorf("yahoo: no price for %s: %w", symbol, marketdata.ErrNotFound)
 	}
 
 	prevClose := res.Meta.PreviousClose
@@ -246,7 +253,9 @@ func (c *Client) Candles(ctx context.Context, req marketdata.CandleRequest) ([]m
 		return nil, err
 	}
 	if len(res.Indicators.Quote) == 0 {
-		return nil, fmt.Errorf("yahoo: no candles for %s", req.Symbol)
+		// A valid symbol can legitimately have no bars in the asked window
+		// (weekends, holidays); that is a data gap, not a Yahoo outage.
+		return nil, fmt.Errorf("yahoo: no candles for %s: %w", req.Symbol, marketdata.ErrNotFound)
 	}
 
 	q := res.Indicators.Quote[0]

@@ -86,6 +86,13 @@ type Provider interface {
 // this on every price call.
 var ErrForbidden = errors.New("market data not permitted for these credentials")
 
+// ErrNotFound means the provider is healthy but has no data for this
+// particular instrument — a delisted ticker, a typo, a symbol Yahoo has
+// never heard of. It must never trip the provider-wide cool-down: one dead
+// symbol in a watchlist poisoning the whole feed for two minutes would take
+// every other quote on the dashboard down with it.
+var ErrNotFound = errors.New("instrument not found")
+
 // ErrUnsupported is returned by a provider that cannot serve a particular call
 // (e.g. history from a quote-only source). It does not mark the provider
 // unhealthy — the chain simply moves on.
@@ -213,8 +220,9 @@ func runOver[T any](c *Chain, providers []Provider, force bool, call func(Provid
 		case err == nil:
 			c.markOK(p.Name())
 			return out, nil
-		case errors.Is(err, ErrUnsupported):
-			// Not a failure of the provider, just a gap in what it offers.
+		case errors.Is(err, ErrUnsupported), errors.Is(err, ErrNotFound):
+			// Not a failure of the provider, just a gap in what it offers —
+			// or in what this particular instrument can give it.
 			lastErr = err
 		default:
 			c.markFailed(p.Name(), err)
