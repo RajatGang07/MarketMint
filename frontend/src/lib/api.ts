@@ -451,6 +451,9 @@ export const api = {
   quotes: (symbols: string[]) => req<Quote[]>(`/market/quotes?symbols=${list(symbols)}`),
   candles: (symbol: string, range: ChartRange) =>
     req<CandleSeries>(`/market/candles?symbol=${encodeURIComponent(symbol)}&range=${range}`),
+  /** Daily bars for an exact date window (YYYY-MM-DD, inclusive, IST). */
+  dailyHistory: (symbol: string, from: string, to: string) =>
+    req<CandleSeries>(`/market/candles?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}`),
 
   searchInstruments: (query: string, limit = 12) =>
     req<Instrument[]>(`/instruments/search?q=${encodeURIComponent(query)}&limit=${limit}`),

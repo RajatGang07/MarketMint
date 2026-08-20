@@ -113,7 +113,7 @@ func (s *Server) Routes(corsOrigins []string) http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
@@ -325,6 +325,8 @@ func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 
 // handleCandles serves chart history. `range` is a friendly preset (1d, 5d,
 // 1mo, 3mo, 1y) and the bar interval is derived from it unless overridden.
+// Alternatively `from`/`to` (YYYY-MM-DD, inclusive, on the IST calendar)
+// select an exact window of daily bars — the History tab's path.
 func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	symbol := marketdata.Normalise(r.URL.Query().Get("symbol"))
 	if symbol == "" {
@@ -332,11 +334,28 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	preset := strings.ToLower(queryOr(r, "range", "1D"))
-	span, interval, ok := rangePreset(preset)
-	if !ok {
-		writeErr(w, http.StatusBadRequest, "range must be one of 1d, 5d, 1mo, 3mo, 1y")
-		return
+	var (
+		start, end time.Time
+		interval   int
+		preset     string
+	)
+	if from := r.URL.Query().Get("from"); from != "" {
+		var err error
+		start, end, err = customWindow(from, r.URL.Query().Get("to"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		interval, preset = 1440, "custom"
+	} else {
+		preset = strings.ToLower(queryOr(r, "range", "1D"))
+		span, iv, ok := rangePreset(preset)
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "range must be one of 1d, 5d, 1mo, 3mo, 1y")
+			return
+		}
+		end = time.Now()
+		start, interval = end.Add(-span), iv
 	}
 	if override := r.URL.Query().Get("interval_minutes"); override != "" {
 		n, err := strconv.Atoi(override)
@@ -347,18 +366,20 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		interval = n
 	}
 
-	end := time.Now()
 	candles, err := s.market.Candles(r.Context(), marketdata.CandleRequest{
 		Exchange:        queryOr(r, "exchange", "NSE"),
 		Segment:         queryOr(r, "segment", "CASH"),
 		Symbol:          symbol,
 		IntervalMinutes: interval,
-		Start:           end.Add(-span),
+		Start:           start,
 		End:             end,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "candle lookup failed: "+err.Error())
 		return
+	}
+	if preset == "custom" {
+		candles = clipCandles(candles, start, end)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -367,6 +388,50 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		"interval_minutes": interval,
 		"candles":          toCandleDTOs(candles),
 	})
+}
+
+// istZone anchors custom date windows: NSE sessions live on the IST calendar
+// regardless of where the server or the browser happens to run.
+var istZone = time.FixedZone("IST", 330*60)
+
+// customWindow turns inclusive from/to dates into a concrete [start, end)
+// window. `to` defaults to today; a future `to` is clamped to now.
+func customWindow(fromStr, toStr string) (start, end time.Time, err error) {
+	from, err := time.ParseInLocation("2006-01-02", fromStr, istZone)
+	if err != nil {
+		return time.Time{}, time.Time{}, errors.New("from must be a YYYY-MM-DD date")
+	}
+	now := time.Now().In(istZone)
+	end = now
+	if toStr != "" {
+		day, perr := time.ParseInLocation("2006-01-02", toStr, istZone)
+		if perr != nil {
+			return time.Time{}, time.Time{}, errors.New("to must be a YYYY-MM-DD date")
+		}
+		end = day.AddDate(0, 0, 1) // include the whole `to` day
+		if end.After(now) {
+			end = now
+		}
+	}
+	if !from.Before(end) {
+		return time.Time{}, time.Time{}, errors.New("from must be on or before to (and not in the future)")
+	}
+	if end.Sub(from) > 5*365*24*time.Hour {
+		return time.Time{}, time.Time{}, errors.New("window too large — at most 5 years")
+	}
+	return from, end, nil
+}
+
+// clipCandles drops bars outside [start, end) — a provider that snaps the
+// window to its own boundaries can hand back a superset.
+func clipCandles(in []marketdata.Candle, start, end time.Time) []marketdata.Candle {
+	out := make([]marketdata.Candle, 0, len(in))
+	for _, c := range in {
+		if !c.Time.Before(start) && c.Time.Before(end) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // rangePreset maps a UI range button onto a lookback window and bar size.

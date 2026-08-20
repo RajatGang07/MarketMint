@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,7 +108,25 @@ type chartResult struct {
 // ---------------------------------------------------------------------------
 
 func (c *Client) fetch(ctx context.Context, symbol, rng, interval string) (chartResult, error) {
-	key := symbol + "|" + rng + "|" + interval
+	return c.request(ctx, symbol, url.Values{
+		"range":    {rng},
+		"interval": {interval},
+	})
+}
+
+// fetchWindow asks for an exact epoch window instead of a lookback range.
+// Yahoo's `range` param always ends at "now", so a historical window that
+// ends in the past needs period1/period2.
+func (c *Client) fetchWindow(ctx context.Context, symbol string, start, end time.Time, interval string) (chartResult, error) {
+	return c.request(ctx, symbol, url.Values{
+		"period1":  {strconv.FormatInt(start.Unix(), 10)},
+		"period2":  {strconv.FormatInt(end.Unix(), 10)},
+		"interval": {interval},
+	})
+}
+
+func (c *Client) request(ctx context.Context, symbol string, params url.Values) (chartResult, error) {
+	key := symbol + "|" + params.Encode()
 
 	c.mu.Lock()
 	if hit, ok := c.cache[key]; ok && time.Since(hit.fetched) < c.ttl {
@@ -116,10 +135,7 @@ func (c *Client) fetch(ctx context.Context, symbol, rng, interval string) (chart
 	}
 	c.mu.Unlock()
 
-	endpoint := fmt.Sprintf("%s/%s?%s", c.baseURL, url.PathEscape(symbol), url.Values{
-		"range":    {rng},
-		"interval": {interval},
-	}.Encode())
+	endpoint := fmt.Sprintf("%s/%s?%s", c.baseURL, url.PathEscape(symbol), params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -216,7 +232,16 @@ func (c *Client) Quote(ctx context.Context, exchange, _, symbol string) (marketd
 func (c *Client) Candles(ctx context.Context, req marketdata.CandleRequest) ([]marketdata.Candle, error) {
 	rng, interval := yahooRange(req)
 
-	res, err := c.fetch(ctx, yahooSymbol(req.Exchange, req.Symbol), rng, interval)
+	// A window that ends at "now" maps cleanly onto Yahoo's lookback ranges
+	// (and shares their cache keys). One that ends in the past does not —
+	// range always anchors at now — so it needs an exact epoch window.
+	var res chartResult
+	var err error
+	if time.Since(req.End) > time.Hour {
+		res, err = c.fetchWindow(ctx, yahooSymbol(req.Exchange, req.Symbol), req.Start, req.End, interval)
+	} else {
+		res, err = c.fetch(ctx, yahooSymbol(req.Exchange, req.Symbol), rng, interval)
+	}
 	if err != nil {
 		return nil, err
 	}
