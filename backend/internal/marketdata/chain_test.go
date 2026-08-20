@@ -201,24 +201,36 @@ func TestMockCandlesAreDeterministic(t *testing.T) {
 	}
 }
 
-func TestLTPLiveNeverPricesOffTheSimulator(t *testing.T) {
+// While a real provider is configured, NOTHING prices off the simulator —
+// not fills, not quotes, not charts, not history. A feed outage must read
+// as an error, never as plausible fake numbers (APARINDS once showed the
+// simulator's hash-derived ~1,920 instead of its real ~16,700).
+func TestChainNeverPricesOffTheSimulator(t *testing.T) {
 	dead := &stub{name: "yahoo", err: errors.New("rate limited")}
 	sim := &stub{name: SimulatorName, price: "3428.75"} // the fantasy price
 	chain := NewChain(quietLogger(), dead, sim)
 	chain.coolOff = 0 // re-probe immediately so recovery is visible in-test
+	ctx := context.Background()
 
-	// Ordinary LTP keeps the platform usable via the simulator...
-	if _, err := chain.LTP(context.Background(), "NSE", "CASH", "NAUKRI"); err != nil {
-		t.Fatalf("LTP should fall through to the simulator: %v", err)
+	if _, err := chain.LTP(ctx, "NSE", "CASH", "NAUKRI"); err == nil {
+		t.Fatal("LTP must not fall through to simulated prices")
 	}
-	// ...but the fill path must refuse and let orders rest instead.
-	if _, err := chain.LTPLive(context.Background(), "NSE", "CASH", "NAUKRI"); err == nil {
+	if _, err := chain.LTPLive(ctx, "NSE", "CASH", "NAUKRI"); err == nil {
 		t.Fatal("LTPLive must not fall through to simulated prices")
+	}
+	if _, err := chain.Quote(ctx, "NSE", "CASH", "NAUKRI"); err == nil {
+		t.Fatal("Quote must not fall through to simulated prices")
+	}
+	if _, err := chain.Candles(ctx, CandleRequest{Symbol: "NAUKRI"}); err == nil {
+		t.Fatal("Candles must not fall through to simulated prices")
+	}
+	if _, err := chain.CandlesLive(ctx, CandleRequest{Symbol: "NAUKRI"}); err == nil {
+		t.Fatal("CandlesLive must not fall through to simulated prices")
 	}
 
 	dead.err = nil
 	dead.price = "1247.85"
-	got, err := chain.LTPLive(context.Background(), "NSE", "CASH", "NAUKRI")
+	got, err := chain.LTPLive(ctx, "NSE", "CASH", "NAUKRI")
 	if err != nil {
 		t.Fatalf("live provider recovered, want price: %v", err)
 	}
@@ -227,11 +239,46 @@ func TestLTPLiveNeverPricesOffTheSimulator(t *testing.T) {
 	}
 }
 
-func TestLTPLiveSimulatorOnlySetupStillWorks(t *testing.T) {
+// CandlesLive re-probes a provider that is still inside its failure
+// cool-down: history requests are user-triggered, so Retry must actually
+// retry instead of failing for the rest of the window.
+func TestCandlesLiveReprobesACoolingProvider(t *testing.T) {
+	flaky := &stub{name: "yahoo", err: errors.New("rate limited")}
+	chain := NewChain(quietLogger(), flaky)
+	ctx := context.Background()
+
+	if _, err := chain.Candles(ctx, CandleRequest{Symbol: "X"}); err == nil {
+		t.Fatal("expected the first call to fail")
+	}
+	flaky.err = nil
+	flaky.price = "42"
+
+	// The polled path waits out the cool-down…
+	if _, err := chain.Candles(ctx, CandleRequest{Symbol: "X"}); err == nil {
+		t.Fatal("Candles should still be cooling off")
+	}
+	// …the user-triggered path does not.
+	got, err := chain.CandlesLive(ctx, CandleRequest{Symbol: "X"})
+	if err != nil {
+		t.Fatalf("CandlesLive must bypass the cool-down: %v", err)
+	}
+	if len(got) != 1 || got[0].Close.String() != "42" {
+		t.Fatalf("want the recovered provider's bar, got %+v", got)
+	}
+}
+
+func TestSimulatorOnlySetupStillWorks(t *testing.T) {
 	sim := &stub{name: SimulatorName, price: "100"}
 	chain := NewChain(quietLogger(), sim)
-	got, err := chain.LTPLive(context.Background(), "NSE", "CASH", "X")
-	if err != nil || got.String() != "100" {
+	ctx := context.Background()
+
+	if got, err := chain.LTPLive(ctx, "NSE", "CASH", "X"); err != nil || got.String() != "100" {
 		t.Fatalf("simulator-only chain is the price authority, got %s err=%v", got, err)
+	}
+	if q, err := chain.Quote(ctx, "NSE", "CASH", "X"); err != nil || q.LastPrice.String() != "100" {
+		t.Fatalf("simulator-only Quote should serve, got %+v err=%v", q, err)
+	}
+	if bars, err := chain.Candles(ctx, CandleRequest{Symbol: "X"}); err != nil || len(bars) != 1 {
+		t.Fatalf("simulator-only Candles should serve, got %d bars err=%v", len(bars), err)
 	}
 }

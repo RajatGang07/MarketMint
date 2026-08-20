@@ -197,11 +197,7 @@ func (c *Chain) markOK(name string) {
 }
 
 // run walks the chain until one provider answers.
-func run[T any](c *Chain, call func(Provider) (T, error)) (T, error) {
-	return runOver(c, c.providers, false, call)
-}
-
-// runOver is run restricted to a subset of the chain. force bypasses the
+// runOver walks providers in order until one answers. force bypasses the
 // failure cool-down: a user-triggered call would rather re-probe a cooling
 // provider right now than wait out the window.
 func runOver[T any](c *Chain, providers []Provider, force bool, call func(Provider) (T, error)) (T, error) {
@@ -233,18 +229,19 @@ func runOver[T any](c *Chain, providers []Provider, force bool, call func(Provid
 
 func (c *Chain) Name() string { return "chain" }
 
-// SimulatorName is the mock provider's name; the chain treats it specially in
-// LTPLive because it is a safety net, not a price authority.
+// SimulatorName is the mock provider's name; the chain refuses to price
+// anything off it while a real provider is configured.
 const SimulatorName = "simulator"
 
-// LTPLive prices an instrument for AUTOMATED fills, and never falls through
-// to the simulator while a real provider is configured: filling resting stops
-// or limits at simulated prices books fantasy P&L into a ledger the user is
-// trying to learn from (a transient Yahoo failure once "sold" three holdings
-// at ~2.7x their real price). Callers treat an error as "skip this symbol
-// until the feed recovers". A simulator-only setup keeps working — its prices
-// are self-consistent when every fill uses them.
-func (c *Chain) LTPLive(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error) {
+// livePool is the chain minus the simulator. While a real provider is
+// configured, simulated prices are never an answer — a transient Yahoo
+// failure once "sold" three holdings at ~2.7x their real price, and a
+// history table of plausible fake bars is misinformation. Every public
+// method prices off this pool, so a feed outage surfaces as an explicit
+// error everywhere (quotes, charts, history, analytics) instead of as
+// quietly wrong numbers. A simulator-only setup keeps working: its prices
+// are self-consistent when every call uses them.
+func (c *Chain) livePool() []Provider {
 	live := make([]Provider, 0, len(c.providers))
 	for _, p := range c.providers {
 		if p.Name() != SimulatorName {
@@ -252,48 +249,43 @@ func (c *Chain) LTPLive(ctx context.Context, exchange, segment, symbol string) (
 		}
 	}
 	if len(live) == 0 {
-		live = c.providers // simulator-only: it is the price authority
+		return c.providers // simulator-only: it is the price authority
 	}
-	return runOver(c, live, false, func(p Provider) (decimal.Decimal, error) {
-		return p.LTP(ctx, exchange, segment, symbol)
-	})
+	return live
 }
 
-// CandlesLive serves price history that must be real: like LTPLive it never
-// falls through to the simulator while a real provider is configured —
-// plausible-looking fake bars in a history table are worse than an error.
-// It also re-probes cooling providers, because these calls are user-triggered
-// and rare: waiting out the cool-down would turn one upstream hiccup into two
-// minutes of failures.
+// LTPLive prices an instrument for AUTOMATED fills. Callers treat an error
+// as "skip this symbol until the feed recovers". Since the whole chain now
+// refuses simulated prices this equals LTP; it stays as the fill path's
+// explicit, documented contract.
+func (c *Chain) LTPLive(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error) {
+	return c.LTP(ctx, exchange, segment, symbol)
+}
+
+// CandlesLive serves user-triggered history requests. Unlike the polled
+// paths it re-probes cooling providers: these calls are rare, so waiting
+// out the cool-down would turn one upstream hiccup into two minutes of
+// failures for someone pressing Retry.
 func (c *Chain) CandlesLive(ctx context.Context, req CandleRequest) ([]Candle, error) {
-	live := make([]Provider, 0, len(c.providers))
-	for _, p := range c.providers {
-		if p.Name() != SimulatorName {
-			live = append(live, p)
-		}
-	}
-	if len(live) == 0 {
-		live = c.providers // simulator-only: it is the price authority
-	}
-	return runOver(c, live, true, func(p Provider) ([]Candle, error) {
+	return runOver(c, c.livePool(), true, func(p Provider) ([]Candle, error) {
 		return p.Candles(ctx, req)
 	})
 }
 
 func (c *Chain) LTP(ctx context.Context, exchange, segment, symbol string) (decimal.Decimal, error) {
-	return run(c, func(p Provider) (decimal.Decimal, error) {
+	return runOver(c, c.livePool(), false, func(p Provider) (decimal.Decimal, error) {
 		return p.LTP(ctx, exchange, segment, symbol)
 	})
 }
 
 func (c *Chain) Quote(ctx context.Context, exchange, segment, symbol string) (Quote, error) {
-	return run(c, func(p Provider) (Quote, error) {
+	return runOver(c, c.livePool(), false, func(p Provider) (Quote, error) {
 		return p.Quote(ctx, exchange, segment, symbol)
 	})
 }
 
 func (c *Chain) Candles(ctx context.Context, req CandleRequest) ([]Candle, error) {
-	return run(c, func(p Provider) ([]Candle, error) {
+	return runOver(c, c.livePool(), false, func(p Provider) ([]Candle, error) {
 		return p.Candles(ctx, req)
 	})
 }

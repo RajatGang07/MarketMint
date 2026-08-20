@@ -65,7 +65,7 @@ is picked up without a restart.
 | -------- | ----- |
 | `groww` | The real broker feed. **Requires a Live Data subscription on the Groww account.** |
 | `yahoo` | Public NSE/BSE quotes and history. No key, no subscription. What this build actually runs on. |
-| `mock` | Deterministic simulator — stable base prices on a slow ±1% sine. Never fails; keep it last as the safety net, or drop it if you would rather the API error than quietly simulate. |
+| `mock` | Deterministic simulator — stable base prices on a slow ±1% sine. Only serves when it is the **only** configured provider (a keyless demo install). While a real feed is configured, an outage surfaces as an explicit error everywhere — quotes, charts, history, signals — never as plausible-looking simulated prices. |
 
 ### The Groww Live Data caveat
 

@@ -11,9 +11,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Mock is a deterministic price simulator and the last link in the chain: it
-// never fails, so the platform stays usable outside market hours and without a
-// market-data subscription.
+// Mock is a deterministic price simulator. The chain only prices off it when
+// it is the ONLY configured provider (a keyless demo install): while a real
+// feed is configured, an outage surfaces as an explicit error rather than as
+// plausible-looking fake prices.
 //
 // Each symbol gets a stable base price (well-known NSE tickers use realistic
 // values, everything else is derived from a hash of the name) and moves on a

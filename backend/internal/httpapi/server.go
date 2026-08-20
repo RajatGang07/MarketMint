@@ -377,8 +377,8 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 	var candles []marketdata.Candle
 	var err error
 	if chain, ok := s.market.(*marketdata.Chain); ok && preset == "custom" {
-		// History-tab requests: real bars or an honest error — a table of
-		// plausible simulated prices for actual past dates is misinformation.
+		// History-tab requests are user-triggered and rare, so they re-probe
+		// a cooling provider immediately instead of waiting out the window.
 		candles, err = chain.CandlesLive(r.Context(), req)
 	} else {
 		candles, err = s.market.Candles(r.Context(), req)
