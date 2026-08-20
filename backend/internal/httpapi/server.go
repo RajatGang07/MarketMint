@@ -366,14 +366,23 @@ func (s *Server) handleCandles(w http.ResponseWriter, r *http.Request) {
 		interval = n
 	}
 
-	candles, err := s.market.Candles(r.Context(), marketdata.CandleRequest{
+	req := marketdata.CandleRequest{
 		Exchange:        queryOr(r, "exchange", "NSE"),
 		Segment:         queryOr(r, "segment", "CASH"),
 		Symbol:          symbol,
 		IntervalMinutes: interval,
 		Start:           start,
 		End:             end,
-	})
+	}
+	var candles []marketdata.Candle
+	var err error
+	if chain, ok := s.market.(*marketdata.Chain); ok && preset == "custom" {
+		// History-tab requests: real bars or an honest error — a table of
+		// plausible simulated prices for actual past dates is misinformation.
+		candles, err = chain.CandlesLive(r.Context(), req)
+	} else {
+		candles, err = s.market.Candles(r.Context(), req)
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "candle lookup failed: "+err.Error())
 		return

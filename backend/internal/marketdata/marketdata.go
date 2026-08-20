@@ -198,16 +198,18 @@ func (c *Chain) markOK(name string) {
 
 // run walks the chain until one provider answers.
 func run[T any](c *Chain, call func(Provider) (T, error)) (T, error) {
-	return runOver(c, c.providers, call)
+	return runOver(c, c.providers, false, call)
 }
 
-// runOver is run restricted to a subset of the chain.
-func runOver[T any](c *Chain, providers []Provider, call func(Provider) (T, error)) (T, error) {
+// runOver is run restricted to a subset of the chain. force bypasses the
+// failure cool-down: a user-triggered call would rather re-probe a cooling
+// provider right now than wait out the window.
+func runOver[T any](c *Chain, providers []Provider, force bool, call func(Provider) (T, error)) (T, error) {
 	var zero T
 	var lastErr error
 
 	for _, p := range providers {
-		if !c.shouldTry(p.Name()) {
+		if !force && !c.shouldTry(p.Name()) {
 			continue
 		}
 		out, err := call(p)
@@ -252,8 +254,29 @@ func (c *Chain) LTPLive(ctx context.Context, exchange, segment, symbol string) (
 	if len(live) == 0 {
 		live = c.providers // simulator-only: it is the price authority
 	}
-	return runOver(c, live, func(p Provider) (decimal.Decimal, error) {
+	return runOver(c, live, false, func(p Provider) (decimal.Decimal, error) {
 		return p.LTP(ctx, exchange, segment, symbol)
+	})
+}
+
+// CandlesLive serves price history that must be real: like LTPLive it never
+// falls through to the simulator while a real provider is configured —
+// plausible-looking fake bars in a history table are worse than an error.
+// It also re-probes cooling providers, because these calls are user-triggered
+// and rare: waiting out the cool-down would turn one upstream hiccup into two
+// minutes of failures.
+func (c *Chain) CandlesLive(ctx context.Context, req CandleRequest) ([]Candle, error) {
+	live := make([]Provider, 0, len(c.providers))
+	for _, p := range c.providers {
+		if p.Name() != SimulatorName {
+			live = append(live, p)
+		}
+	}
+	if len(live) == 0 {
+		live = c.providers // simulator-only: it is the price authority
+	}
+	return runOver(c, live, true, func(p Provider) ([]Candle, error) {
+		return p.Candles(ctx, req)
 	})
 }
 

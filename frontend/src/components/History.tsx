@@ -71,6 +71,7 @@ export function History({ initialSymbol }: { initialSymbol?: string }) {
   const [rows, setRows] = useState<Row[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const today = isoDay(new Date())
@@ -113,7 +114,10 @@ export function History({ initialSymbol }: { initialSymbol?: string }) {
         setRows(visible.reverse()) // newest first
       })
       .catch((err: Error) => {
-        if (alive) setError(err.message)
+        if (alive) {
+          setError(err.message)
+          setRows(null) // never leave a stale table under an error banner
+        }
       })
       .finally(() => {
         if (alive) setLoading(false)
@@ -121,7 +125,7 @@ export function History({ initialSymbol }: { initialSymbol?: string }) {
     return () => {
       alive = false
     }
-  }, [symbol, span])
+  }, [symbol, span, attempt])
 
   const summary = useMemo(() => {
     if (!rows || rows.length === 0) return null
@@ -292,8 +296,22 @@ export function History({ initialSymbol }: { initialSymbol?: string }) {
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-300">
-              {error}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-300">
+              <div>
+                {error}
+                <div className="mt-1 text-xs text-rose-400/80">
+                  This tab never shows simulated prices — if the live feed didn't answer, you get this instead of
+                  wrong data.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAttempt((a) => a + 1)}
+                disabled={loading}
+                className="rounded-lg border border-rose-700/60 px-3 py-1.5 text-xs font-medium text-rose-200 transition-colors hover:bg-rose-900/40 disabled:opacity-50"
+              >
+                Retry
+              </button>
             </div>
           ) : null}
 
