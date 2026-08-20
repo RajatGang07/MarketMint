@@ -90,6 +90,9 @@ export function History({ initialSymbol }: { initialSymbol?: string }) {
     let alive = true
     setLoading(true)
     setError(null)
+    // Drop the previous table immediately: a RELIANCE row under an APARINDS
+    // header, even for a beat, is the wrong-data bug in miniature.
+    setRows(null)
 
     // Over-fetch a week so the first visible row still has a previous close
     // to measure its day change against.

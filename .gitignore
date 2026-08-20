@@ -19,3 +19,7 @@ backend/internal/web/dist/*
 # Market data export (large, not source)
 groww_market_data/
 groww_market_data_*.zip
+
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
