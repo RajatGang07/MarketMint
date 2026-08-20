@@ -27,6 +27,7 @@ export function Forecast({ initialSymbol }: { initialSymbol?: string }) {
   const [data, setData] = useState<ForecastData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const [accuracy, setAccuracy] = useState<HorizonAccuracy[] | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -56,7 +57,7 @@ export function Forecast({ initialSymbol }: { initialSymbol?: string }) {
     return () => {
       alive = false
     }
-  }, [symbol])
+  }, [symbol, attempt])
 
   return (
     <div className="space-y-4">
@@ -106,8 +107,16 @@ export function Forecast({ initialSymbol }: { initialSymbol?: string }) {
 
         <div className="space-y-3">
           {error ? (
-            <div className="rounded-xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-300">
-              {error}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-300">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => setAttempt((a) => a + 1)}
+                disabled={loading}
+                className="rounded-lg border border-rose-700/60 px-3 py-1.5 text-xs font-medium text-rose-200 transition-colors hover:bg-rose-900/40 disabled:opacity-50"
+              >
+                Retry
+              </button>
             </div>
           ) : null}
 

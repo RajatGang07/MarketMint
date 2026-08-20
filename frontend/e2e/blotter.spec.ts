@@ -1,22 +1,27 @@
 import { expect, test } from '@playwright/test'
 
-import { signUp } from './helpers'
+import { signUp, waitForLiveTicket } from './helpers'
 
 test('the blotter paginates past ten rows', async ({ page, baseURL }) => {
+  test.setTimeout(300_000)
   await signUp(page)
+  await waitForLiveTicket(page, 'RELIANCE')
 
   // Seed twelve orders through the API — order history rows appear whether
   // or not the market is open to fill them, so this stays deterministic.
+  // Each seed retries through any transient feed cool-down.
   const token = await page.evaluate(() => localStorage.getItem('paper-trading.session'))
   for (const symbol of [
     'SBIN', 'ITC', 'WIPRO', 'TATASTEEL', 'ONGC', 'NTPC',
     'COALINDIA', 'GAIL', 'BPCL', 'IOC', 'HINDALCO', 'VEDL',
   ]) {
-    const res = await page.request.post(`${baseURL}/orders`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data: { trading_symbol: symbol, transaction_type: 'BUY', order_type: 'MARKET', quantity: 1 },
-    })
-    expect(res.ok()).toBeTruthy()
+    await expect(async () => {
+      const res = await page.request.post(`${baseURL}/orders`, {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { trading_symbol: symbol, transaction_type: 'BUY', order_type: 'MARKET', quantity: 1 },
+      })
+      expect(res.ok()).toBeTruthy()
+    }).toPass({ timeout: 180_000, intervals: [2_000, 5_000, 10_000] })
   }
 
   await page.reload()

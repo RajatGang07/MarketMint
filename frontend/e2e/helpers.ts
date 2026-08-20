@@ -15,3 +15,18 @@ export async function signUp(page: Page): Promise<string> {
   await expect(page.getByRole('button', { name: 'History' })).toBeVisible()
   return user
 }
+
+/** Switches to a main navigation tab by its label. */
+export async function openTab(page: Page, name: string) {
+  await page.getByRole('button', { name, exact: true }).click()
+}
+
+/**
+ * Waits until the order ticket prices the symbol off the live feed. During a
+ * feed cool-down the chip reads "SYM · —" and the engine would rightly refuse
+ * to trade, so tests wait for a real price the same way a person would. The
+ * timeout comfortably covers the chain's two-minute provider cool-down.
+ */
+export async function waitForLiveTicket(page: Page, symbol: string) {
+  await expect(page.getByText(new RegExp(`${symbol} · ₹`))).toBeVisible({ timeout: 180_000 })
+}

@@ -12,8 +12,13 @@ import { defineConfig, devices } from '@playwright/test'
  */
 export default defineConfig({
   testDir: './e2e',
-  timeout: 60_000,
+  timeout: 240_000,
   expect: { timeout: 15_000 },
+  // Two workers and a retry: the suite shares one live Yahoo feed, and a
+  // burst of parallel sessions can trip its rate limiter into the chain's
+  // two-minute cool-down. Gentler concurrency plus one retry rides it out.
+  workers: 2,
+  retries: 1,
   reporter: [['list']],
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:8000',

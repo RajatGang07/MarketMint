@@ -37,12 +37,17 @@ npm run dev                              # http://localhost:5173
 
 ### End-to-end tests
 
-`cd frontend && npm run e2e` drives the real app in headless Chrome — signup,
-the dashboard, the History tab (default window, custom dates, the
-no-simulated-prices guarantee) and CSV export. It targets
-`http://localhost:8000` (build via `backend/scripts/build.sh`, run
-`backend/bin/server`) or whatever `E2E_BASE_URL` points at, and uses the
-installed Google Chrome so no Playwright browser download is needed.
+`cd frontend && npm run e2e` drives the real app in headless Chrome across
+every flow: auth (signup, wrong password, sign-out/in, session reload), the
+full trade loop (watchlist, search, chart ranges, resting limit orders,
+market fills, cancel, account reset), blotter pagination, the History tab
+(default window, custom dates, CSV export, the no-simulated-prices
+guarantee), the three Ideas views, Forecast, Autopilot and Charges. Tests
+ride the live feed on purpose — when it cools down they wait or press Retry
+the way a person would. Targets `http://localhost:8000` (build via
+`backend/scripts/build.sh`, run `backend/bin/server`) or whatever
+`E2E_BASE_URL` points at, and uses the installed Google Chrome so no
+Playwright browser download is needed.
 
 ---
 
