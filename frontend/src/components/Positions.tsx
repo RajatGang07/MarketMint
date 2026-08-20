@@ -1,5 +1,6 @@
 import type { Position } from '../lib/api'
 import { inr, num, pct, signedInr, toneClass } from '../lib/format'
+import { Pager, usePager } from './Pager'
 
 /** Open holdings marked to market. Clicking a row selects that symbol. */
 export function Positions({
@@ -9,6 +10,8 @@ export function Positions({
   positions: Position[]
   onSelect: (symbol: string) => void
 }) {
+  const pager = usePager(positions)
+
   if (positions.length === 0) {
     return (
       <p className="px-4 py-8 text-center text-sm text-slate-500">
@@ -18,7 +21,7 @@ export function Positions({
   }
 
   return (
-    <div className="max-h-80 overflow-auto">
+    <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-slate-900">
           <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
@@ -31,7 +34,7 @@ export function Positions({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-800/70">
-          {positions.map((p) => {
+          {pager.slice.map((p) => {
             // Percent return on this holding's own cost, not on the portfolio.
             const cost = p.avg_price * p.quantity
             const pnlPct = cost > 0 ? (p.unrealized_pnl / cost) * 100 : 0
@@ -55,6 +58,7 @@ export function Positions({
           })}
         </tbody>
       </table>
+      <Pager {...pager} onPage={pager.setPage} />
     </div>
   )
 }

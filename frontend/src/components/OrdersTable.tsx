@@ -1,5 +1,6 @@
 import type { Order } from '../lib/api'
 import { dateTimeOf, inr, num } from '../lib/format'
+import { Pager, usePager } from './Pager'
 
 const STATUS_STYLE: Record<string, string> = {
   FILLED: 'bg-emerald-500/15 text-emerald-400',
@@ -17,12 +18,14 @@ export function OrdersTable({
   onCancel: (orderRef: string) => void
   emptyMessage?: string
 }) {
+  const pager = usePager(orders)
+
   if (orders.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-slate-500">{emptyMessage}</p>
   }
 
   return (
-    <div className="max-h-80 overflow-auto">
+    <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-slate-900">
           <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
@@ -36,7 +39,7 @@ export function OrdersTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-800/70">
-          {orders.map((o) => (
+          {pager.slice.map((o) => (
             <tr key={o.id} className="tabular-nums" title={o.message ?? undefined}>
               <td className="px-4 py-2.5 text-slate-400">{dateTimeOf(o.created_at)}</td>
               <td className="px-4 py-2.5">
@@ -80,6 +83,7 @@ export function OrdersTable({
           ))}
         </tbody>
       </table>
+      <Pager {...pager} onPage={pager.setPage} />
     </div>
   )
 }

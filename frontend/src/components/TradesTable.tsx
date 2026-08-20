@@ -1,14 +1,17 @@
 import type { Trade } from '../lib/api'
 import { dateTimeOf, inr, num, signedInr, toneClass } from '../lib/format'
+import { Pager, usePager } from './Pager'
 
 /** Executed fills, newest first, with the realised P&L each sell booked. */
 export function TradesTable({ trades }: { trades: Trade[] }) {
+  const pager = usePager(trades)
+
   if (trades.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-slate-500">No trades yet.</p>
   }
 
   return (
-    <div className="max-h-80 overflow-auto">
+    <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-slate-900">
           <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
@@ -21,7 +24,7 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-800/70">
-          {trades.map((t) => (
+          {pager.slice.map((t) => (
             <tr key={t.id} className="tabular-nums">
               <td className="px-4 py-2.5 text-slate-400">{dateTimeOf(t.created_at)}</td>
               <td
@@ -41,6 +44,7 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
           ))}
         </tbody>
       </table>
+      <Pager {...pager} onPage={pager.setPage} />
     </div>
   )
 }
